@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "IoT AC Controller",
+    "slug": "iot-ac-controller",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.iotac.controller",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera is used to scan QR codes for device registration."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0f172a"
+      },
+      "package": "com.iotac.controller",
+      "permissions": ["CAMERA"]
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow IoT AC to access camera for QR scanning."
+        }
+      ]
+    ]
+  }
+}

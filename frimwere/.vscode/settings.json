@@ -1,0 +1,12 @@
+{
+    "idf.currentSetup": "C:\\esp\\.espressif\\v5.5.4\\esp-idf",
+    "idf.portWin": "COM3",
+    "idf.flashType": "UART",
+    "python-envs.pythonProjects": [
+        {
+            "path": "Soji_Sensor_Simulator.py",
+            "envManager": "ms-python.python:venv",
+            "packageManager": "ms-python.python:pip"
+        }
+    ]
+}

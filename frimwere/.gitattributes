@@ -1,0 +1,14 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Ignore build directory
+.build/
+
+# Ignore old directory
+.old/
+
+# Ignore Soji_Sensor_Simulator directory
+Soji_Sensor_Simulator/
+
+# Also ignore if it's a hidden directory
+.Soji_Sensor_Simulator.py/

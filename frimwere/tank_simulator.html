@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tank Level Simulator — SFMtechnologies</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d0f14;
+    --surface: #151820;
+    --surface2: #1c2030;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.14);
+    --accent: #00d4ff;
+    --accent2: #f5a623;
+    --text: #e8eaf0;
+    --muted: #6b7280;
+    --fluid: #1a6bff;
+    --fluid2: #0a3d99;
+    --font-display: 'Syne', sans-serif;
+    --font-mono: 'Space Mono', monospace;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-display);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── header ── */
+  header {
+    padding: 1.25rem 2rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--surface);
+  }
+  .logo {
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .logo span { color: var(--muted); }
+  .header-title {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* ── main layout ── */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 0;
+  }
+
+  /* ── sidebar ── */
+  aside {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 2rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    overflow-y: auto;
+  }
+
+  .section-label {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .shape-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .shape-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 8px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    transition: border-color 0.15s, background 0.15s;
+    font-family: var(--font-display);
+  }
+  .shape-btn:hover { border-color: var(--border2); background: #222535; }
+  .shape-btn.active {
+    border-color: var(--accent);
+    background: rgba(0,212,255,0.06);
+  }
+  .shape-btn svg { width: 36px; height: 36px; }
+  .shape-btn span {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    line-height: 1.3;
+  }
+  .shape-btn.active span { color: var(--accent); }
+
+  .dim-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .dim-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .dim-row label {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+  .dim-row input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    padding: 8px 12px;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .dim-row input:focus { border-color: var(--accent); }
+  .dim-row input::-webkit-inner-spin-button { opacity: 0.4; }
+
+  /* ── main panel ── */
+  .panel {
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  /* ── metrics ── */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .metric-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0.4;
+  }
+  .metric-card.highlight::before { opacity: 1; background: var(--accent2); }
+  .metric-lbl {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .metric-val {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    font-family: var(--font-mono);
+    line-height: 1;
+  }
+  .metric-unit {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 3px;
+    font-family: var(--font-mono);
+  }
+  .metric-card.highlight .metric-val { color: var(--accent2); }
+
+  /* ── viz + slider ── */
+  .viz-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    display: flex;
+    gap: 2rem;
+    align-items: center;
+    flex: 1;
+  }
+
+  .tank-wrap {
+    flex: 0 0 180px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  canvas#tankCanvas {
+    display: block;
+  }
+  .tank-dim-label {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+
+  .slider-block {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .slider-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .slider-title {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .slider-readout {
+    font-size: 32px;
+    font-weight: 800;
+    font-family: var(--font-mono);
+    color: var(--accent2);
+    line-height: 1;
+  }
+  .slider-readout span { font-size: 16px; color: var(--muted); margin-left: 4px; }
+
+  input[type=range] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 3px;
+    outline: none;
+    border: 1px solid var(--border);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent2);
+    cursor: pointer;
+    border: 3px solid var(--bg);
+    box-shadow: 0 0 0 1px var(--accent2);
+    transition: transform 0.1s;
+  }
+  input[type=range]::-webkit-slider-thumb:active { transform: scale(1.2); }
+  input[type=range]::-moz-range-thumb {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent2);
+    cursor: pointer;
+    border: 3px solid var(--bg);
+  }
+
+  .progress-bar-bg {
+    width: 100%;
+    height: 8px;
+    background: var(--surface2);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--fluid), var(--accent));
+    transition: width 0.1s;
+  }
+
+  .level-info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+  .level-info-item {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+  }
+  .level-info-item .lbl { font-size: 10px; font-family: var(--font-mono); color: var(--muted); letter-spacing: 0.06em; margin-bottom: 4px; }
+  .level-info-item .val { font-size: 15px; font-weight: 700; font-family: var(--font-mono); color: var(--text); }
+
+  /* ── formula hint ── */
+  .formula-hint {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    padding: 10px 14px;
+    background: var(--surface2);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    line-height: 1.6;
+  }
+  .formula-hint strong { color: var(--accent); font-weight: 400; }
+
+  /* ── footer ── */
+  footer {
+    padding: 0.75rem 2rem;
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    background: var(--surface);
+  }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    aside { border-right: none; border-bottom: 1px solid var(--border); }
+    .metrics { grid-template-columns: 1fr 1fr; }
+    .viz-block { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">SFM<span>technologies</span> &nbsp;/&nbsp; Smart Sensor</div>
+  <div class="header-title">Tank Level Simulator v1.0</div>
+</header>
+
+<main>
+  <!-- ── SIDEBAR ── -->
+  <aside>
+    <div>
+      <div class="section-label">Forme du réservoir</div>
+      <div class="shape-grid">
+        <button class="shape-btn active" data-shape="cylinder_v" onclick="selectShape('cylinder_v')">
+          <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <ellipse cx="18" cy="8" rx="10" ry="4" stroke="currentColor" stroke-width="1.5"/>
+            <ellipse cx="18" cy="28" rx="10" ry="4" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="8" y1="8" x2="8" y2="28" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="28" y1="8" x2="28" y2="28" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <span>Cylindre<br>vertical</span>
+        </button>
+        <button class="shape-btn" data-shape="cylinder_h" onclick="selectShape('cylinder_h')">
+          <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <ellipse cx="8" cy="18" rx="4" ry="10" stroke="currentColor" stroke-width="1.5"/>
+            <ellipse cx="28" cy="18" rx="4" ry="10" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="8" y1="8" x2="28" y2="8" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="8" y1="28" x2="28" y2="28" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <span>Cylindre<br>horizontal</span>
+        </button>
+        <button class="shape-btn" data-shape="rect" onclick="selectShape('rect')">
+          <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="7" y="7" width="22" height="22" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="7" y1="7" x2="13" y2="3" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="29" y1="7" x2="35" y2="3" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="35" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="35" y1="3" x2="35" y2="25" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="29" y1="29" x2="35" y2="25" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <span>Rectangulaire<br>parallélépipède</span>
+        </button>
+        <button class="shape-btn" data-shape="cone_frustum" onclick="selectShape('cone_frustum')">
+          <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <line x1="6" y1="30" x2="12" y2="8" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="30" y1="30" x2="24" y2="8" stroke="currentColor" stroke-width="1.5"/>
+            <ellipse cx="18" cy="8" rx="6" ry="2.5" stroke="currentColor" stroke-width="1.5"/>
+            <ellipse cx="18" cy="30" rx="12" ry="3.5" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <span>Tronc de cône<br>conique</span>
+        </button>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Dimensions intérieures</div>
+      <div class="dim-group" id="dims-container"></div>
+    </div>
+
+    <div id="formula-block">
+      <div class="section-label">Formule utilisée</div>
+      <div class="formula-hint" id="formula-text"></div>
+    </div>
+  </aside>
+
+  <!-- ── MAIN PANEL ── -->
+  <div class="panel">
+    <!-- metrics -->
+    <div class="metrics">
+      <div class="metric-card">
+        <div class="metric-lbl">Capacité totale</div>
+        <div class="metric-val" id="cap-total">—</div>
+        <div class="metric-unit">litres</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-lbl">Hauteur max</div>
+        <div class="metric-val" id="h-max">—</div>
+        <div class="metric-unit">mm</div>
+      </div>
+      <div class="metric-card highlight">
+        <div class="metric-lbl">Volume actuel</div>
+        <div class="metric-val" id="lvl-liters">—</div>
+        <div class="metric-unit">litres</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-lbl">Remplissage</div>
+        <div class="metric-val" id="pct-val">—</div>
+        <div class="metric-unit">%</div>
+      </div>
+    </div>
+
+    <!-- viz + slider -->
+    <div class="viz-block">
+      <div class="tank-wrap">
+        <canvas id="tankCanvas" width="180" height="280"></canvas>
+        <div class="tank-dim-label" id="canvas-label">—</div>
+      </div>
+
+      <div class="slider-block">
+        <div class="slider-header">
+          <div class="slider-title">Hauteur du liquide</div>
+        </div>
+        <div class="slider-readout" id="slider-readout">— <span>mm</span></div>
+
+        <input type="range" id="levelSlider" min="0" max="2000" value="1000" step="1"
+               oninput="onSlider()">
+
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="prog-fill" style="width:50%"></div>
+        </div>
+
+        <div class="level-info-grid">
+          <div class="level-info-item">
+            <div class="lbl">Niveau mm</div>
+            <div class="val" id="li-mm">—</div>
+          </div>
+          <div class="level-info-item">
+            <div class="lbl">Volume L</div>
+            <div class="val" id="li-l">—</div>
+          </div>
+          <div class="level-info-item">
+            <div class="lbl">Volume m³</div>
+            <div class="val" id="li-m3">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span>SFMtechnologies — Smart Sensor Platform</span>
+  <span id="footer-time"></span>
+</footer>
+
+<script>
+const shapes = {
+  cylinder_v: {
+    label: "Cylindre vertical",
+    formula: "<strong>V(h)</strong> = π × (D/2)² × h",
+    dims: [
+      { id: "diameter", label: "Diamètre intérieur (mm)", def: 1000, min: 1 },
+      { id: "height",   label: "Hauteur (mm)",            def: 2000, min: 1 }
+    ],
+    maxH: d => d.height,
+    volume: (d, h) => Math.PI * (d.diameter/2)**2 * Math.min(h, d.height)
+  },
+  cylinder_h: {
+    label: "Cylindre horizontal",
+    formula: "<strong>V(h)</strong> = L × R² × (θ − sin θ) / 2  &nbsp; où θ = 2·arccos((R−h)/R)",
+    dims: [
+      { id: "diameter", label: "Diamètre intérieur (mm)", def: 1000, min: 1 },
+      { id: "length",   label: "Longueur (mm)",           def: 3000, min: 1 }
+    ],
+    maxH: d => d.diameter,
+    volume: (d, h) => {
+      const r = d.diameter/2;
+      const hc = Math.min(Math.max(h, 0), d.diameter);
+      const theta = 2 * Math.acos((r - hc) / r);
+      return (r*r*(theta - Math.sin(theta))/2) * d.length;
+    }
+  },
+  rect: {
+    label: "Parallélépipède rectangulaire",
+    formula: "<strong>V(h)</strong> = L × l × h",
+    dims: [
+      { id: "width",  label: "Largeur intérieure (mm)",  def: 1000, min: 1 },
+      { id: "length", label: "Longueur intérieure (mm)", def: 2000, min: 1 },
+      { id: "height", label: "Hauteur (mm)",             def: 1500, min: 1 }
+    ],
+    maxH: d => d.height,
+    volume: (d, h) => d.width * d.length * Math.min(h, d.height)
+  },
+  cone_frustum: {
+    label: "Tronc de cône",
+    formula: "<strong>V(h)</strong> = (π·h/3) × (R²<sub>b</sub> + R<sub>b</sub>·R(h) + R²(h)) &nbsp; où R(h) = R<sub>b</sub> + (R<sub>t</sub>−R<sub>b</sub>)·h/H",
+    dims: [
+      { id: "r_bottom", label: "Rayon bas (mm)",  def: 600, min: 1 },
+      { id: "r_top",    label: "Rayon haut (mm)", def: 400, min: 1 },
+      { id: "height",   label: "Hauteur (mm)",    def: 2000, min: 1 }
+    ],
+    maxH: d => d.height,
+    volume: (d, h) => {
+      const hh = Math.min(Math.max(h,0), d.height);
+      const rb = d.r_bottom, rt = d.r_top, H = d.height;
+      const rh = rb + (rt - rb) * (hh/H);
+      return (Math.PI * hh / 3) * (rb*rb + rb*rh + rh*rh);
+    }
+  }
+};
+
+let currentShape = "cylinder_v";
+let dims = {};
+
+function selectShape(key) {
+  currentShape = key;
+  document.querySelectorAll('.shape-btn').forEach(b => b.classList.toggle('active', b.dataset.shape === key));
+  buildDims();
+}
+
+function buildDims() {
+  const s = shapes[currentShape];
+  const container = document.getElementById('dims-container');
+  container.innerHTML = '';
+  dims = {};
+  s.dims.forEach(dd => {
+    dims[dd.id] = dd.def;
+    const row = document.createElement('div');
+    row.className = 'dim-row';
+    row.innerHTML = `<label for="dim_${dd.id}">${dd.label}</label>
+      <input type="number" id="dim_${dd.id}" value="${dd.def}" min="${dd.min}" step="1">`;
+    container.appendChild(row);
+    row.querySelector('input').addEventListener('input', e => {
+      dims[dd.id] = Math.max(parseFloat(e.target.value) || 1, dd.min);
+      update();
+    });
+  });
+  document.getElementById('formula-text').innerHTML = s.formula;
+  update();
+}
+
+function onSlider() { update(); }
+
+function update() {
+  const s = shapes[currentShape];
+  const d = dims;
+  const maxH = s.maxH(d);
+  const totalVol = s.volume(d, maxH);
+  const totalL = totalVol / 1e6;
+
+  const slider = document.getElementById('levelSlider');
+  slider.max = Math.round(maxH);
+  let h = Math.min(parseFloat(slider.value), maxH);
+  slider.value = h;
+
+  const curVol = s.volume(d, h);
+  const curL = curVol / 1e6;
+  const pct = totalVol > 0 ? curVol / totalVol * 100 : 0;
+
+  document.getElementById('cap-total').textContent = totalL.toFixed(1);
+  document.getElementById('h-max').textContent = Math.round(maxH);
+  document.getElementById('lvl-liters').textContent = curL.toFixed(1);
+  document.getElementById('pct-val').textContent = pct.toFixed(1);
+  document.getElementById('slider-readout').innerHTML = `${Math.round(h)} <span>mm</span>`;
+  document.getElementById('prog-fill').style.width = pct.toFixed(2) + '%';
+  document.getElementById('li-mm').textContent = Math.round(h);
+  document.getElementById('li-l').textContent = curL.toFixed(2);
+  document.getElementById('li-m3').textContent = (curVol / 1e9).toFixed(4);
+  document.getElementById('canvas-label').textContent = `H = ${Math.round(maxH)} mm`;
+
+  drawTank(h, maxH, pct / 100);
+}
+
+// ── CANVAS DRAWING ──
+function drawTank(h, maxH, frac) {
+  const canvas = document.getElementById('tankCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const padX = 20, padTop = 16, padBot = 16;
+  const tw = W - padX * 2;
+  const th = H - padTop - padBot;
+
+  const borderCol = '#2a3045';
+  const borderHigh = '#3a4560';
+  const fluidTop = '#1a6bff';
+  const fluidBot = '#0a2a77';
+  const accentLine = '#f5a623';
+  const textCol = '#6b7280';
+  const bgFill = '#151820';
+  const bgFill2 = '#1c2030';
+
+  const d = dims;
+  const s = shapes[currentShape];
+
+  ctx.save();
+
+  if (currentShape === 'cylinder_v') {
+    // body
+    ctx.fillStyle = bgFill2;
+    roundRect(ctx, padX, padTop, tw, th, 6); ctx.fill();
+    ctx.strokeStyle = borderCol; ctx.lineWidth = 1.5;
+    roundRect(ctx, padX, padTop, tw, th, 6); ctx.stroke();
+    // fluid
+    const fh = th * frac;
+    if (fh > 0) {
+      const fy = padTop + th - fh;
+      const grad = ctx.createLinearGradient(0, fy, 0, padTop + th);
+      grad.addColorStop(0, fluidTop);
+      grad.addColorStop(1, fluidBot);
+      ctx.fillStyle = grad;
+      roundRectBottom(ctx, padX + 1, fy, tw - 2, fh, 5); ctx.fill();
+    }
+    // border overlay
+    ctx.strokeStyle = borderHigh; ctx.lineWidth = 1.5;
+    roundRect(ctx, padX, padTop, tw, th, 6); ctx.stroke();
+    // level line
+    if (frac > 0.005 && frac < 0.995) {
+      const fy = padTop + th - th * frac;
+      ctx.strokeStyle = accentLine; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+      ctx.beginPath(); ctx.moveTo(padX+4, fy); ctx.lineTo(padX+tw-4, fy); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // ticks on right
+    drawTicks(ctx, padX + tw + 3, padTop, th, '#3a4560', '#2a3045');
+
+  } else if (currentShape === 'cylinder_h') {
+    const ry = th / 2, cx = W/2, cy = padTop + ry;
+    ctx.fillStyle = bgFill2;
+    ctx.beginPath(); ctx.ellipse(cx, cy, tw/2, ry, 0, 0, 2*Math.PI); ctx.fill();
+    ctx.strokeStyle = borderCol; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(cx, cy, tw/2, ry, 0, 0, 2*Math.PI); ctx.stroke();
+
+    const botY = padTop + th;
+    const levelY = botY - (Math.min(h, d.diameter) / d.diameter) * th;
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(cx, cy, tw/2, ry, 0, 0, 2*Math.PI); ctx.clip();
+    const grad = ctx.createLinearGradient(0, levelY, 0, botY);
+    grad.addColorStop(0, fluidTop); grad.addColorStop(1, fluidBot);
+    ctx.fillStyle = grad;
+    ctx.fillRect(padX, levelY, tw, botY - levelY);
+    ctx.restore();
+    ctx.strokeStyle = borderHigh; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(cx, cy, tw/2, ry, 0, 0, 2*Math.PI); ctx.stroke();
+    if (frac > 0.005 && frac < 0.995) {
+      ctx.strokeStyle = accentLine; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+      ctx.beginPath(); ctx.moveTo(padX+4, levelY); ctx.lineTo(padX+tw-4, levelY); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+  } else if (currentShape === 'rect') {
+    ctx.fillStyle = bgFill2;
+    roundRect(ctx, padX, padTop, tw, th, 3); ctx.fill();
+    ctx.strokeStyle = borderCol; ctx.lineWidth = 1.5;
+    roundRect(ctx, padX, padTop, tw, th, 3); ctx.stroke();
+    const fh = th * frac;
+    if (fh > 0) {
+      const fy = padTop + th - fh;
+      const grad = ctx.createLinearGradient(0, fy, 0, padTop + th);
+      grad.addColorStop(0, fluidTop); grad.addColorStop(1, fluidBot);
+      ctx.fillStyle = grad;
+      ctx.fillRect(padX+1, fy, tw-2, fh);
+    }
+    ctx.strokeStyle = borderHigh; ctx.lineWidth = 1.5;
+    roundRect(ctx, padX, padTop, tw, th, 3); ctx.stroke();
+    if (frac > 0.005 && frac < 0.995) {
+      const fy = padTop + th - th * frac;
+      ctx.strokeStyle = accentLine; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+      ctx.beginPath(); ctx.moveTo(padX+4, fy); ctx.lineTo(padX+tw-4, fy); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    drawTicks(ctx, padX + tw + 3, padTop, th, '#3a4560', '#2a3045');
+
+  } else if (currentShape === 'cone_frustum') {
+    const rb = d.r_bottom, rt = d.r_top, maxR = Math.max(rb, rt);
+    const xBL = padX + (1 - rb/maxR) * tw/2;
+    const xBR = padX + tw - (1 - rb/maxR) * tw/2;
+    const xTL = padX + (1 - rt/maxR) * tw/2;
+    const xTR = padX + tw - (1 - rt/maxR) * tw/2;
+    const yB = padTop + th, yT = padTop;
+
+    ctx.fillStyle = bgFill2;
+    ctx.beginPath(); ctx.moveTo(xTL,yT); ctx.lineTo(xTR,yT); ctx.lineTo(xBR,yB); ctx.lineTo(xBL,yB); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = borderCol; ctx.lineWidth = 1.5; ctx.stroke();
+
+    const levelY = yB - frac * th;
+    const xLL = xBL + (xTL - xBL) * frac;
+    const xLR = xBR + (xTR - xBR) * frac;
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(xTL,yT); ctx.lineTo(xTR,yT); ctx.lineTo(xBR,yB); ctx.lineTo(xBL,yB); ctx.closePath(); ctx.clip();
+    const grad = ctx.createLinearGradient(0, levelY, 0, yB);
+    grad.addColorStop(0, fluidTop); grad.addColorStop(1, fluidBot);
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.moveTo(xLL, levelY); ctx.lineTo(xLR, levelY); ctx.lineTo(xBR, yB); ctx.lineTo(xBL, yB); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = borderHigh; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(xTL,yT); ctx.lineTo(xTR,yT); ctx.lineTo(xBR,yB); ctx.lineTo(xBL,yB); ctx.closePath(); ctx.stroke();
+    if (frac > 0.005 && frac < 0.995) {
+      ctx.strokeStyle = accentLine; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+      ctx.beginPath(); ctx.moveTo(xLL+2, levelY); ctx.lineTo(xLR-2, levelY); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // level label
+  ctx.fillStyle = textCol;
+  ctx.font = '11px "Space Mono", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(Math.round(h) + ' mm', W/2, H - 3);
+
+  ctx.restore();
+}
+
+function drawTicks(ctx, x, yTop, height, col1, col2) {
+  for (let i = 0; i <= 10; i++) {
+    const y = yTop + height * (1 - i/10);
+    ctx.strokeStyle = i % 5 === 0 ? col1 : col2;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + (i % 5 === 0 ? 6 : 3), y);
+    ctx.stroke();
+  }
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+function roundRectBottom(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x+w, y);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y);
+  ctx.closePath();
+}
+
+// footer clock
+function tick() {
+  document.getElementById('footer-time').textContent = new Date().toLocaleTimeString('fr-FR');
+}
+tick(); setInterval(tick, 1000);
+
+// init
+buildDims();
+</script>
+</body>
+</html>
