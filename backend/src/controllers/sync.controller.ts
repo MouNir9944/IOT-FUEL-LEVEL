@@ -4,6 +4,13 @@ import { Device } from '../models/schemas';
 import { getSocketServer } from '../services/socket.service';
 import { logger } from '../utils/logger';
 
+// Multer adds req.file when the request is multipart/form-data
+declare module 'express' {
+  interface Request {
+    file?: Express.Multer.File;
+  }
+}
+
 // ── Telemetry normalisation (mirrors mqtt.service.ts) ─────────────────────────
 // The firmware sends compact names (level_pct, volume_l, temp_c, ts …).
 // We store and emit the canonical names so the mobile app sees a consistent shape.
@@ -52,7 +59,24 @@ const syncSchema = z.object({
  *   { "accepted": N, "duplicates": N, "rejected": N }
  */
 export async function syncReadings(req: Request, res: Response): Promise<void> {
-  const parsed = syncSchema.safeParse(req.body);
+  // ── Body extraction ───────────────────────────────────────────────────────
+  // The SIM7600 firmware sends multipart/form-data with a single "file" part
+  // (name="file", filename="readings.json") that contains the raw JSON.
+  // multer populates req.file.buffer for multipart requests.
+  // Plain application/json callers (e.g. curl / Postman tests) land in req.body.
+  let rawBody: unknown;
+  if (req.file?.buffer) {
+    try {
+      rawBody = JSON.parse(req.file.buffer.toString('utf8'));
+    } catch {
+      res.status(400).json({ error: 'Invalid JSON in multipart file part' });
+      return;
+    }
+  } else {
+    rawBody = req.body;
+  }
+
+  const parsed = syncSchema.safeParse(rawBody);
   if (!parsed.success) {
     res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
     return;
