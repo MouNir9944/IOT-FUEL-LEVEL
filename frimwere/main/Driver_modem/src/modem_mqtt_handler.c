@@ -19,7 +19,7 @@
 /* ── Offline-sync HTTP endpoint ─────────────────────────────────────────────
  * When internet recovers the device POSTs all SD-buffered readings in one
  * batch to this endpoint instead of replaying them one-by-one over MQTT.   */
-#define SYNC_SERVER   "smart-gridix-backend.onrender.com"
+#define SYNC_SERVER   "iot-fuel-level.onrender.com"
 #define SYNC_PATH     "/api/devices/sync"
 #define SYNC_BATCH_SIZE  8   /* readings per HTTP POST — keeps body under ~3 KB   */
 static const char *TAG_MODEM_MQTT_HANDLER = "MODEM MQTT HANDLER";
