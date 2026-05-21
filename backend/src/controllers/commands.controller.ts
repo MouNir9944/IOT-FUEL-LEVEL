@@ -155,7 +155,12 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       });
 
     } else if (command.cmd === 'ota_update') {
-      mqttClient.publish(`device/${mac}/ota`, command.url, { qos: 1, retain: false });
+      // Firmware expects JSON {"cmd":"ota_update","url":"..."} on the /ota topic
+      mqttClient.publish(
+        `device/${mac}/ota`,
+        JSON.stringify({ cmd: 'ota_update', url: command.url }),
+        { qos: 1, retain: false },
+      );
       logger.info('OTA update triggered', { device: mac, url: command.url });
 
     } else if (command.cmd === 'report_config') {

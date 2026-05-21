@@ -9,6 +9,14 @@ import '../core/socket_service.dart';
 import '../models/device.dart';
 import '../widgets/status_badge.dart';
 
+// ── Log entry ─────────────────────────────────────────────────────────────────
+
+class _LogEntry {
+  final String message;
+  final DateTime time;
+  _LogEntry({required this.message, required this.time});
+}
+
 // ── Shape metadata ────────────────────────────────────────────────────────────
 
 class _Shape {
@@ -82,6 +90,14 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   bool _debugMode  = false;
   bool _sending    = false;
 
+  // ── Logs tab state ─────────────────────────────────────────────────────────
+  final List<_LogEntry> _logs = [];
+
+  // ── OTA tab state ──────────────────────────────────────────────────────────
+  final _otaUrlCtrl = TextEditingController();
+  bool   _otaSending = false;
+  String? _otaStatus;
+
   @override
   void initState() {
     super.initState();
@@ -89,7 +105,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     _status    = _device.lastStatus;
     _telemetry = _device.lastTelemetry;
 
-    _tabs     = TabController(length: 2, vsync: this)
+    _tabs     = TabController(length: 4, vsync: this)
       ..addListener(_onTabChanged);
     _fillAnim = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 1400))
@@ -113,10 +129,12 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     _lengthCtrl.dispose();
     _widthCtrl.dispose();
     _thresholdCtrl.dispose();
+    _otaUrlCtrl.dispose();
     _configTimeoutTimer?.cancel();
     SocketService.off('telemetry_update',     id: 'device_control');
     SocketService.off('device_status_change', id: 'device_control');
     SocketService.off('config_report',        id: 'device_control_cfg');
+    SocketService.off('device_log',           id: 'device_control_logs');
     SocketService.removeReconnectCallback(_onSocketReconnect);
     super.dispose();
   }
@@ -150,6 +168,18 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       final cfg = m['config'];
       if (cfg is Map) _applyConfigReport(Map<String, dynamic>.from(cfg));
     }, id: 'device_control_cfg');
+
+    // Live device logs
+    SocketService.on('device_log', (data) {
+      if (!mounted) return;
+      final m = Map<String, dynamic>.from(data as Map);
+      if (m['device_id'] != _device.deviceId) return;
+      final msg = m['log']?.toString() ?? '';
+      setState(() {
+        _logs.insert(0, _LogEntry(message: msg, time: DateTime.now()));
+        if (_logs.length > 300) _logs.removeLast();
+      });
+    }, id: 'device_control_logs');
   }
 
   void _onSocketReconnect() =>
@@ -331,6 +361,35 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     ));
   }
 
+  // ── OTA send ─────────────────────────────────────────────────────────────
+
+  Future<void> _sendOta() async {
+    final url = _otaUrlCtrl.text.trim();
+    if (url.isEmpty) {
+      _snack('Enter a firmware URL first', isError: true);
+      return;
+    }
+    setState(() { _otaSending = true; _otaStatus = null; });
+    try {
+      await ApiClient.instance.post(
+        '/devices/${_device.id}/command',
+        data: {'cmd': 'ota_update', 'url': url},
+      );
+      if (!mounted) return;
+      setState(() {
+        _otaStatus = '✓  OTA request sent. Device will download, flash, and reboot.';
+      });
+      _snack('OTA update sent to device');
+    } on DioException catch (e) {
+      if (!mounted) return;
+      final msg = ApiClient.errorMessage(e);
+      setState(() { _otaStatus = '✗  $msg'; });
+      _snack(msg, isError: true);
+    } finally {
+      if (mounted) setState(() => _otaSending = false);
+    }
+  }
+
   // ── Capacity calculator ───────────────────────────────────────────────────
 
   double _calcCapacityL() {
@@ -384,17 +443,27 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
           labelColor: Colors.white,
           unselectedLabelColor: AppColors.textMuted,
           indicatorColor: AppColors.primary,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
+          labelPadding:
+              const EdgeInsets.symmetric(horizontal: 18),
           tabs: [
             Tab(icon: const Icon(Icons.water_drop_rounded, size: 18),
                 text: s.fuelLevel),
             Tab(icon: const Icon(Icons.settings_rounded, size: 18),
                 text: s.tankConfig),
+            const Tab(
+                icon: Icon(Icons.article_outlined, size: 18),
+                text: 'Logs'),
+            const Tab(
+                icon: Icon(Icons.system_update_rounded, size: 18),
+                text: 'OTA'),
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabs,
-        children: [_monitorTab(s), _configTab(s)],
+        children: [_monitorTab(s), _configTab(s), _logsTab(), _otaTab()],
       ),
     );
   }
@@ -929,6 +998,334 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
               ),
             ),
           ),
+
+          const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+
+  // ── Tab 3 — Live device logs ──────────────────────────────────────────────
+
+  Widget _logsTab() {
+    return Column(
+      children: [
+        // Header bar
+        Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          color: AppColors.surface,
+          child: Row(children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _status == 'online'
+                    ? AppColors.success
+                    : AppColors.textMuted,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _logs.isEmpty
+                    ? 'Waiting for device logs…'
+                    : '${_logs.length} entries — newest first',
+                style: const TextStyle(
+                    color: AppColors.text,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+            if (_logs.isNotEmpty)
+              GestureDetector(
+                onTap: () => setState(() => _logs.clear()),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text('Clear',
+                      style: TextStyle(
+                          color: AppColors.textMuted, fontSize: 11)),
+                ),
+              ),
+          ]),
+        ),
+        const Divider(height: 1, color: AppColors.border),
+
+        // Log list
+        Expanded(
+          child: _logs.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const CircularProgressIndicator(
+                          color: AppColors.primary),
+                      const SizedBox(height: 16),
+                      const Text('Waiting for device logs…',
+                          style: TextStyle(color: AppColors.textMuted)),
+                      const SizedBox(height: 6),
+                      Text(
+                        _status == 'online'
+                            ? 'Device is online — logs appear when it sends debug output.'
+                            : 'Device appears offline.',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 11),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(10),
+                  itemCount: _logs.length,
+                  itemBuilder: (_, i) {
+                    final l = _logs[i];
+                    // Colour-code by severity keywords
+                    final msg = l.message;
+                    final Color msgColor = msg.contains('ERROR') ||
+                            msg.contains('error') ||
+                            msg.contains('ERR')
+                        ? AppColors.error
+                        : msg.contains('WARN') || msg.contains('warn')
+                            ? AppColors.warning
+                            : AppColors.text;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 3),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            l.time
+                                .toLocal()
+                                .toString()
+                                .substring(11, 19),
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              msg,
+                              style: TextStyle(
+                                color: msgColor,
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  // ── Tab 4 — OTA firmware update ───────────────────────────────────────────
+
+  Widget _otaTab() {
+    final bool hasStatus = _otaStatus != null;
+    final bool isSuccess = hasStatus && _otaStatus!.startsWith('✓');
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Warning banner
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.warning.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.warning.withOpacity(0.35)),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    color: AppColors.warning, size: 22),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('OTA Firmware Update',
+                          style: TextStyle(
+                              color: AppColors.warning,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 14)),
+                      SizedBox(height: 4),
+                      Text(
+                        'The device will download and flash the new firmware, '
+                        'then reboot automatically. Ensure the URL is reachable '
+                        'from the device\'s cellular network.',
+                        style: TextStyle(
+                            color: AppColors.textMuted, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // Device info
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceLight,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(children: [
+              const Icon(Icons.memory_rounded,
+                  color: AppColors.textMuted, size: 16),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(_device.displayName,
+                        style: const TextStyle(
+                            color: AppColors.text,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700)),
+                    Text(_device.deviceId,
+                        style: const TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 11,
+                            fontFamily: 'monospace')),
+                  ],
+                ),
+              ),
+              StatusBadge(status: _status),
+            ]),
+          ),
+
+          const SizedBox(height: 20),
+
+          // Firmware URL input
+          const _SectionLabel('Firmware Binary URL'),
+          TextField(
+            controller: _otaUrlCtrl,
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            style: const TextStyle(
+                color: AppColors.text,
+                fontSize: 13,
+                fontFamily: 'monospace'),
+            decoration: InputDecoration(
+              hintText: 'https://…/firmware.bin',
+              hintStyle: const TextStyle(
+                  color: AppColors.textMuted, fontFamily: 'monospace'),
+              prefixIcon: const Icon(Icons.link_rounded,
+                  color: AppColors.textMuted, size: 20),
+              filled: true,
+              fillColor: AppColors.surface,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                  vertical: 14, horizontal: 14),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppColors.border)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppColors.border)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(
+                      color: AppColors.warning, width: 2)),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Send button
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: ElevatedButton.icon(
+              onPressed: _otaSending ? null : _sendOta,
+              icon: _otaSending
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2.5))
+                  : const Icon(Icons.system_update_rounded,
+                      color: Colors.white, size: 20),
+              label: Text(
+                _otaSending
+                    ? 'Sending OTA request…'
+                    : 'Send OTA Update to Device',
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor:
+                    _otaSending ? AppColors.surfaceLight : AppColors.warning,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+              ),
+            ),
+          ),
+
+          // Status message
+          if (hasStatus) ...[
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: isSuccess
+                    ? AppColors.success.withOpacity(0.08)
+                    : AppColors.error.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isSuccess
+                      ? AppColors.success.withOpacity(0.35)
+                      : AppColors.error.withOpacity(0.35),
+                ),
+              ),
+              child: Text(
+                _otaStatus!,
+                style: TextStyle(
+                  color: isSuccess ? AppColors.success : AppColors.error,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (isSuccess) ...[
+              const SizedBox(height: 10),
+              const Text(
+                'Monitor the Logs tab to track download progress and reboot.',
+                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+            ],
+          ],
 
           const SizedBox(height: 32),
         ],
