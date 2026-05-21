@@ -12,6 +12,7 @@ import sitesRoutes from './routes/sites.routes';
 import devicesRoutes from './routes/devices.routes';
 import plansRoutes from './routes/plans.routes';
 import superadminRoutes from './routes/superadmin.routes';
+import syncRoutes from './routes/sync.routes';
 import { logger } from './utils/logger';
 
 const app = express();
@@ -45,6 +46,10 @@ app.use('/sites', sitesRoutes);
 app.use('/devices', devicesRoutes);
 app.use('/superadmin', superadminRoutes);
 app.use('/', plansRoutes);
+
+// Device offline-sync (no auth — firmware POSTs here on reconnect)
+// Matches the firmware's hardcoded path:  POST /api/devices/sync
+app.use('/api/devices', syncRoutes);
 
 // 404
 app.use((_req, res) => {
