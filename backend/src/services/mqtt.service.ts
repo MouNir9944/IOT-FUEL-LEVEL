@@ -165,7 +165,11 @@ async function handleConfigReport(
     if (io) {
       io.to(`device:${deviceStrId}`).emit('config_report', {
         device_id: deviceStrId,
-        config: { ...rawConfig, alert_threshold_pct: alertPct },
+        config: {
+          ...rawConfig,
+          alert_threshold_pct: alertPct,
+          receivedAt: new Date().toISOString(), // timestamp when backend received this config_report
+        },
       });
       logger.info('Config report relayed to app', { device: deviceStrId });
     }

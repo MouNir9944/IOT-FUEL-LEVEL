@@ -284,6 +284,10 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   // ── Socket ────────────────────────────────────────────────────────────────
 
   void _initSocket() {
+    // Subscribe to the device socket room immediately — before any async work.
+    // If we wait for _loadStatus() to complete first, the device might already
+    // have published config_report and we'd miss the socket event entirely.
+    SocketService.subscribeToDevice(_device.deviceId);
     SocketService.addReconnectCallback(_onSocketReconnect);
 
     SocketService.on('telemetry_update', (data) {
@@ -1926,7 +1930,7 @@ class _TankShapeGrid extends StatelessWidget {
         crossAxisCount: 4,
         crossAxisSpacing: 8,
         mainAxisSpacing: 8,
-        childAspectRatio: 0.78,
+        mainAxisExtent: 100, // fixed height — cards never blow up on wide screens
       ),
       itemCount: _kShapes.length,
       itemBuilder: (_, i) {
