@@ -53,6 +53,7 @@ const commandSchema = z.discriminatedUnion('cmd', [
       width_cm:              z.number().positive().optional(),
       sensor_offset_cm:      z.number().min(0).optional(),
       alert_threshold_pct:   z.number().min(0).max(100).optional(),
+      temp_alert_c:          z.number().min(0).optional(),
       reporting_interval_s:  z.number().int().min(5).max(86400).optional(),
       timezone_offset_min:   z.number().int().optional(),
       gps_enabled:           z.boolean().optional(),
@@ -135,12 +136,15 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       if (v.gps_enabled  !== undefined) deviceCfg.gps_enabled  = v.gps_enabled;
       if (v.debug_mode   !== undefined) deviceCfg.debug_mode   = v.debug_mode;
 
-      // ── alert_threshold_pct: stored on the device doc; not sent to firmware ──
-      // (firmware has no alert logic — the threshold is app-side only)
-      if (v.alert_threshold_pct !== undefined) {
-        await Device.findByIdAndUpdate(id, {
-          'last_telemetry.alert_threshold_pct': v.alert_threshold_pct,
-        });
+      // ── App-side-only thresholds: stored on the device doc, not sent to firmware ──
+      // (firmware has no alert logic — thresholds are evaluated in the mobile app)
+      const dbUpdate: Record<string, unknown> = {};
+      if (v.alert_threshold_pct !== undefined)
+        dbUpdate['last_telemetry.alert_threshold_pct'] = v.alert_threshold_pct;
+      if (v.temp_alert_c !== undefined)
+        dbUpdate['last_telemetry.temp_alert_c'] = v.temp_alert_c;
+      if (Object.keys(dbUpdate).length > 0) {
+        await Device.findByIdAndUpdate(id, dbUpdate);
       }
 
       mqttClient.publish(

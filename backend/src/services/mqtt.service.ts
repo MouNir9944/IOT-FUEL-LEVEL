@@ -154,12 +154,15 @@ async function handleConfigReport(
   rawConfig: Record<string, unknown>,
 ): Promise<void> {
   try {
-    // alert_threshold_pct lives in last_telemetry, not in firmware config
+    // App-side thresholds live in last_telemetry, not in firmware NVS config.
+    // Fetch them and merge into the emitted config so the mobile app can
+    // pre-populate its alert settings form.
     const device = await Device.findOne({ device_id: deviceStrId })
       .select('last_telemetry')
       .lean();
     const tel = device?.last_telemetry as Record<string, unknown> | null;
-    const alertPct = (tel?.alert_threshold_pct as number | undefined) ?? 20;
+    const alertPct   = (tel?.alert_threshold_pct as number | undefined) ?? 20;
+    const tempAlertC = (tel?.temp_alert_c         as number | undefined) ?? 80;
 
     const io = getSocketServer();
     if (io) {
@@ -168,7 +171,8 @@ async function handleConfigReport(
         config: {
           ...rawConfig,
           alert_threshold_pct: alertPct,
-          receivedAt: new Date().toISOString(), // timestamp when backend received this config_report
+          temp_alert_c:        tempAlertC,
+          receivedAt: new Date().toISOString(), // timestamp when backend received this
         },
       });
       logger.info('Config report relayed to app', { device: deviceStrId });

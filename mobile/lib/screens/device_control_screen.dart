@@ -153,10 +153,10 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   final _radiusBCtrl = TextEditingController(text: '0.4'); // ellipse minor axis
   final _lengthCtrl  = TextEditingController(text: '2.0');
   final _widthCtrl   = TextEditingController(text: '1.5');
-  final _thresholdCtrl = TextEditingController(text: '20');
+  final _thresholdCtrl  = TextEditingController(text: '20');
+  final _tempAlertCtrl  = TextEditingController(text: '80');
   int  _reportingIntervalS = 30;
   int  _timezoneOffsetMin  = 0;
-  bool _gpsEnabled = true;
   bool _debugMode  = false;
   bool _sending    = false;
 
@@ -172,9 +172,9 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   String _savedLength         = '2.0';
   String _savedWidth          = '1.5';
   String _savedThreshold      = '20';
+  String _savedTempAlert      = '80';
   int    _savedIntervalS      = 30;
   int    _savedTzMin          = 0;
-  bool   _savedGps            = true;
   bool   _savedDebug          = false;
   List<_TankSection> _savedSections = [];
   DateTime? _configSentAt;     // last time we pushed config to device
@@ -182,49 +182,49 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   bool get _isDirty {
     if (!_configLoaded) return false;
-    if (_shape            != _savedShape)                   return true;
-    if (_heightCtrl.text  != _savedHeight)                  return true;
-    if (_radiusCtrl.text  != _savedRadius)                  return true;
-    if (_radiusBCtrl.text != _savedRadiusB)                 return true;
-    if (_lengthCtrl.text  != _savedLength)                  return true;
-    if (_widthCtrl.text   != _savedWidth)                   return true;
-    if (_thresholdCtrl.text != _savedThreshold)             return true;
-    if (_reportingIntervalS != _savedIntervalS)             return true;
-    if (_timezoneOffsetMin  != _savedTzMin)                 return true;
-    if (_gpsEnabled         != _savedGps)                   return true;
-    if (_debugMode          != _savedDebug)                 return true;
-    if (_sections.length    != _savedSections.length)       return true;
+    if (_shape              != _savedShape)             return true;
+    if (_heightCtrl.text    != _savedHeight)            return true;
+    if (_radiusCtrl.text    != _savedRadius)            return true;
+    if (_radiusBCtrl.text   != _savedRadiusB)           return true;
+    if (_lengthCtrl.text    != _savedLength)            return true;
+    if (_widthCtrl.text     != _savedWidth)             return true;
+    if (_thresholdCtrl.text != _savedThreshold)         return true;
+    if (_tempAlertCtrl.text != _savedTempAlert)         return true;
+    if (_reportingIntervalS != _savedIntervalS)         return true;
+    if (_timezoneOffsetMin  != _savedTzMin)             return true;
+    if (_debugMode          != _savedDebug)             return true;
+    if (_sections.length    != _savedSections.length)   return true;
     return false;
   }
 
   void _saveSnapshot() {
-    _savedShape     = _shape;
-    _savedHeight    = _heightCtrl.text;
-    _savedRadius    = _radiusCtrl.text;
-    _savedRadiusB   = _radiusBCtrl.text;
-    _savedLength    = _lengthCtrl.text;
-    _savedWidth     = _widthCtrl.text;
-    _savedThreshold = _thresholdCtrl.text;
-    _savedIntervalS = _reportingIntervalS;
-    _savedTzMin     = _timezoneOffsetMin;
-    _savedGps       = _gpsEnabled;
-    _savedDebug     = _debugMode;
-    _savedSections  = _sections.map((s) => s.clone()).toList();
+    _savedShape      = _shape;
+    _savedHeight     = _heightCtrl.text;
+    _savedRadius     = _radiusCtrl.text;
+    _savedRadiusB    = _radiusBCtrl.text;
+    _savedLength     = _lengthCtrl.text;
+    _savedWidth      = _widthCtrl.text;
+    _savedThreshold  = _thresholdCtrl.text;
+    _savedTempAlert  = _tempAlertCtrl.text;
+    _savedIntervalS  = _reportingIntervalS;
+    _savedTzMin      = _timezoneOffsetMin;
+    _savedDebug      = _debugMode;
+    _savedSections   = _sections.map((s) => s.clone()).toList();
   }
 
   void _resetToSaved() {
     setState(() {
       _shape = _savedShape;
-      _heightCtrl.text  = _savedHeight;
-      _radiusCtrl.text  = _savedRadius;
-      _radiusBCtrl.text = _savedRadiusB;
-      _lengthCtrl.text  = _savedLength;
-      _widthCtrl.text   = _savedWidth;
+      _heightCtrl.text    = _savedHeight;
+      _radiusCtrl.text    = _savedRadius;
+      _radiusBCtrl.text   = _savedRadiusB;
+      _lengthCtrl.text    = _savedLength;
+      _widthCtrl.text     = _savedWidth;
       _thresholdCtrl.text = _savedThreshold;
+      _tempAlertCtrl.text = _savedTempAlert;
       _reportingIntervalS = _savedIntervalS;
       _timezoneOffsetMin  = _savedTzMin;
-      _gpsEnabled = _savedGps;
-      _debugMode  = _savedDebug;
+      _debugMode          = _savedDebug;
       _sections
         ..clear()
         ..addAll(_savedSections.map((s) => s.clone()));
@@ -271,6 +271,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     _lengthCtrl.dispose();
     _widthCtrl.dispose();
     _thresholdCtrl.dispose();
+    _tempAlertCtrl.dispose();
     _otaUrlCtrl.dispose();
     _configTimeoutTimer?.cancel();
     SocketService.off('telemetry_update',     id: 'device_control');
@@ -328,8 +329,17 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     }, id: 'device_control_logs');
   }
 
-  void _onSocketReconnect() =>
-      SocketService.subscribeToDevice(_device.deviceId);
+  void _onSocketReconnect() {
+    SocketService.subscribeToDevice(_device.deviceId);
+    // If we were mid-request for config, the device may have responded while
+    // the socket was down and we missed the event.  Re-request now that we are
+    // back in the room.
+    if (mounted && _configLoading) {
+      _configTimeoutTimer?.cancel();
+      setState(() => _configLoading = false); // unlock the guard
+      _requestDeviceConfig();
+    }
+  }
 
   Future<void> _loadStatus() async {
     try {
@@ -342,10 +352,14 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         _status    = d.lastStatus;
         _telemetry = d.lastTelemetry;
         _fillAnim..reset()..forward();
-        // Pre-fill alert threshold from last known telemetry
+        // Pre-fill alert thresholds from last known telemetry
         if (d.lastTelemetry != null) {
           _thresholdCtrl.text =
               d.lastTelemetry!.alertThresholdPct.toStringAsFixed(0);
+          if (d.lastTelemetry!.tempAlertC != null) {
+            _tempAlertCtrl.text =
+                d.lastTelemetry!.tempAlertC!.toStringAsFixed(0);
+          }
         }
       });
       SocketService.subscribeToDevice(_device.deviceId);
@@ -365,6 +379,9 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   Future<void> _requestDeviceConfig() async {
     if (_configLoading) return;
+    // Ensure we are in the socket room *before* the device responds.
+    // This is idempotent — safe to call even if already subscribed.
+    SocketService.subscribeToDevice(_device.deviceId);
     setState(() { _configLoading = true; _configLoaded = false; });
     try {
       await ApiClient.instance.post(
@@ -372,7 +389,8 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         data: {'cmd': 'report_config'},
       );
       _configTimeoutTimer?.cancel();
-      _configTimeoutTimer = Timer(const Duration(seconds: 10), () {
+      // 15 s gives the SIM7600 cellular round-trip a comfortable window.
+      _configTimeoutTimer = Timer(const Duration(seconds: 15), () {
         if (mounted && _configLoading) setState(() => _configLoading = false);
       });
     } on DioException catch (_) {
@@ -401,13 +419,14 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     if (interval != null) _reportingIntervalS = interval;
     final tz = (config['timezone_offset_min'] as num?)?.toInt();
     if (tz != null) _timezoneOffsetMin = tz;
-    final gps = config['gps_enabled'] as bool?;
-    if (gps != null) _gpsEnabled = gps;
     final dbg = config['debug_mode'] as bool?;
     if (dbg != null) _debugMode = dbg;
 
     final alertPct = (config['alert_threshold_pct'] as num?)?.toDouble();
     if (alertPct != null) _thresholdCtrl.text = alertPct.toStringAsFixed(0);
+
+    final tempAlertC = (config['temp_alert_c'] as num?)?.toDouble();
+    if (tempAlertC != null) _tempAlertCtrl.text = tempAlertC.toStringAsFixed(0);
 
     // Multi-section
     final rawSections = config['tank_sections'];
@@ -483,11 +502,11 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         'tank_sections': _sections.map((s) => s.toJson()).toList(),
       'reporting_interval_s': _reportingIntervalS,
       'timezone_offset_min':  _timezoneOffsetMin,
-      'gps_enabled': _gpsEnabled,
       'debug_mode':  _debugMode,
     };
 
-    final alertPct = double.tryParse(_thresholdCtrl.text.trim());
+    final alertPct   = double.tryParse(_thresholdCtrl.text.trim());
+    final tempAlertC = double.tryParse(_tempAlertCtrl.text.trim());
 
     setState(() => _sending = true);
     try {
@@ -497,11 +516,15 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         data: {'cmd': 'update_config', 'config': firmwareCfg},
       );
 
-      // 2. Update alert_threshold_pct in DB (app-side only, not in firmware)
-      if (alertPct != null) {
+      // 2. Update app-side-only thresholds in DB (not stored in firmware NVS)
+      final appCfg = <String, dynamic>{
+        if (alertPct   != null) 'alert_threshold_pct': alertPct,
+        if (tempAlertC != null) 'temp_alert_c':        tempAlertC,
+      };
+      if (appCfg.isNotEmpty) {
         await ApiClient.instance.post(
           '/devices/${_device.id}/command',
-          data: {'cmd': 'set_config', 'value': {'alert_threshold_pct': alertPct}},
+          data: {'cmd': 'set_config', 'value': appCfg},
         );
       }
 
@@ -1194,16 +1217,6 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
                 const SizedBox(height: 8),
 
-                // GPS toggle
-                _ToggleRow(
-                  icon: Icons.gps_fixed_rounded,
-                  iconColor: AppColors.success,
-                  title: 'GPS Location',
-                  subtitle: 'Include GPS in telemetry',
-                  value: _gpsEnabled,
-                  onChanged: canEdit ? (v) => setState(() => _gpsEnabled = v) : null,
-                ),
-
                 // Debug toggle — superadmin only
                 if (_isSuperAdmin) ...[
                   const SizedBox(height: 8),
@@ -1229,8 +1242,10 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+
+                // ── Fuel level threshold ─────────────────────────────────
                 const Text(
-                  'Alert Threshold (%)',
+                  'Fuel Alert Threshold',
                   style: TextStyle(
                       color: AppColors.textMuted,
                       fontSize: 12,
@@ -1239,6 +1254,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                 const SizedBox(height: 6),
                 TextField(
                   controller: _thresholdCtrl,
+                  enabled: canEdit,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   style: const TextStyle(
@@ -1273,12 +1289,68 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                             color: AppColors.fuelLow, width: 2)),
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 const Text(
-                  'App shows a warning when fuel drops below this level.',
+                  'Warn when fuel level drops below this percentage.',
                   style: TextStyle(
                       color: AppColors.textMuted, fontSize: 11),
                 ),
+
+                const SizedBox(height: 18),
+
+                // ── Temperature threshold ────────────────────────────────
+                const Text(
+                  'Temperature Alert Threshold',
+                  style: TextStyle(
+                      color: AppColors.textMuted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _tempAlertCtrl,
+                  enabled: canEdit,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(
+                      color: AppColors.text, fontSize: 15),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(
+                        Icons.thermostat_rounded,
+                        color: AppColors.warning,
+                        size: 20),
+                    suffixText: '°C',
+                    suffixStyle: const TextStyle(
+                        color: AppColors.textMuted),
+                    hintText: '80',
+                    hintStyle:
+                        const TextStyle(color: AppColors.textMuted),
+                    filled: true,
+                    fillColor: AppColors.surfaceLight,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                        vertical: 14, horizontal: 14),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide:
+                            const BorderSide(color: AppColors.border)),
+                    enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide:
+                            const BorderSide(color: AppColors.border)),
+                    focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(
+                            color: AppColors.warning, width: 2)),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Warn when temperature exceeds this value.',
+                  style: TextStyle(
+                      color: AppColors.textMuted, fontSize: 11),
+                ),
+
               ],
             ),
           ),

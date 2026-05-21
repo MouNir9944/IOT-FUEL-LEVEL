@@ -7,6 +7,7 @@ class Telemetry {
   final int?    rssi;             // WiFi/LoRa signal dBm (optional)
   final DateTime timestamp;
   final double alertThresholdPct; // alert when fuel drops below this %
+  final double? tempAlertC;       // alert when temperature exceeds this °C
 
   const Telemetry({
     required this.deviceId,
@@ -17,6 +18,7 @@ class Telemetry {
     this.rssi,
     required this.timestamp,
     this.alertThresholdPct = 20.0,
+    this.tempAlertC,
   });
 
   factory Telemetry.fromJson(Map<String, dynamic> j) => Telemetry(
@@ -34,6 +36,7 @@ class Telemetry {
         rssi:              (j['rssi']                as num?)?.toInt(),
         timestamp:         _parseTimestamp(j),
         alertThresholdPct: (j['alert_threshold_pct'] as num?)?.toDouble() ?? 20.0,
+        tempAlertC:        (j['temp_alert_c']         as num?)?.toDouble(),
       );
 
   /// Handles both ISO-8601 string ("timestamp") and Unix-epoch int ("ts").
