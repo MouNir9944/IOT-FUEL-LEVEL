@@ -27,7 +27,7 @@ class _TechnicianLogsScreenState extends State<TechnicianLogsScreen>
   final List<_LogEntry> _logs = [];
   Map<String, dynamic>? _config;
   final _calibCtrl = TextEditingController(
-      text: '{\n  "flow_ml_per_pulse": 2.25\n}');
+      text: '{\n  "tank_capacity_l": 1000,\n  "alert_threshold_pct": 20\n}');
   bool _sending = false;
 
   @override
@@ -55,10 +55,12 @@ class _TechnicianLogsScreenState extends State<TechnicianLogsScreen>
       if (mounted && d.lastTelemetry != null) {
         setState(() {
           _config = {
-            'valve_state':   d.lastTelemetry!.valveState,
-            'flow_rate_lpm': d.lastTelemetry!.flowRateLpm,
-            'flow_total_l':  d.lastTelemetry!.flowTotalL,
-            'control_mode':  d.lastTelemetry!.controlMode,
+            'fuel_level_pct':      d.lastTelemetry!.fuelLevelPct,
+            'fuel_volume_l':       d.lastTelemetry!.fuelVolumeL,
+            'pump_state':          d.lastTelemetry!.pumpState,
+            'temperature_c':       d.lastTelemetry!.temperatureC,
+            'alert_threshold_pct': d.lastTelemetry!.alertThresholdPct,
+            'control_mode':        d.lastTelemetry!.controlMode,
           };
         });
       }
