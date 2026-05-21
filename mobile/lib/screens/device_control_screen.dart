@@ -28,9 +28,10 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   Telemetry? _telemetry;
   String _status = 'unknown';
   late TabController _tabs;
-  late AnimationController _gaugeAnim;
+  late AnimationController _fillAnim;   // 0 → 1 on first load
+  late AnimationController _waveAnim;   // repeating wave
 
-  // ── Tank config form state ──────────────────────────────────────────────
+  // ── Tank config form state ─────────────────────────────────────────────────
   String _shape = 'cylindrical_vertical';
   final _heightCtrl    = TextEditingController(text: '200');
   final _diameterCtrl  = TextEditingController(text: '100');
@@ -46,10 +47,15 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     _device    = widget.device;
     _status    = _device.lastStatus;
     _telemetry = _device.lastTelemetry;
-    _tabs      = TabController(length: 2, vsync: this);
-    _gaugeAnim = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 900));
-    _gaugeAnim.forward();
+
+    _tabs     = TabController(length: 2, vsync: this);
+    _fillAnim = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1400))
+      ..forward();
+    _waveAnim = AnimationController(
+        vsync: this, duration: const Duration(seconds: 2))
+      ..repeat();
+
     _loadStatus();
     _initSocket();
   }
@@ -57,7 +63,8 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   @override
   void dispose() {
     _tabs.dispose();
-    _gaugeAnim.dispose();
+    _fillAnim.dispose();
+    _waveAnim.dispose();
     _heightCtrl.dispose();
     _diameterCtrl.dispose();
     _lengthCtrl.dispose();
@@ -70,19 +77,26 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     super.dispose();
   }
 
+  // ── Socket ────────────────────────────────────────────────────────────────
+
   void _initSocket() {
     SocketService.addReconnectCallback(_onSocketReconnect);
 
     SocketService.on('telemetry_update', (data) {
       if (!mounted) return;
-      final m = data as Map<String, dynamic>;
+      final m = Map<String, dynamic>.from(data as Map);
       if (m['device_id'] != _device.deviceId) return;
-      setState(() => _telemetry = Telemetry.fromJson(m));
+      setState(() {
+        _telemetry = Telemetry.fromJson(m);
+        _fillAnim
+          ..reset()
+          ..forward();
+      });
     }, id: 'device_control');
 
     SocketService.on('device_status_change', (data) {
       if (!mounted) return;
-      final m = data as Map<String, dynamic>;
+      final m = Map<String, dynamic>.from(data as Map);
       if (m['device_id'] != _device.deviceId) return;
       setState(() => _status = m['status'] as String? ?? _status);
     }, id: 'device_control');
@@ -102,29 +116,34 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         _device    = d;
         _status    = d.lastStatus;
         _telemetry = d.lastTelemetry;
+        _fillAnim
+          ..reset()
+          ..forward();
       });
       SocketService.subscribeToDevice(_device.deviceId);
     } catch (_) {}
   }
 
+  // ── Config send ───────────────────────────────────────────────────────────
+
   Future<void> _sendConfig() async {
     if (_sending) return;
     final s = AppStrings.read(context);
 
-    // Build payload based on shape
     final Map<String, dynamic> cfg = {
-      'shape':                _shape,
-      'sensor_offset_cm':     double.tryParse(_offsetCtrl.text.trim())    ?? 5.0,
-      'alert_threshold_pct':  double.tryParse(_thresholdCtrl.text.trim()) ?? 20.0,
+      'shape':               _shape,
+      'sensor_offset_cm':    double.tryParse(_offsetCtrl.text.trim())    ?? 5.0,
+      'alert_threshold_pct': double.tryParse(_thresholdCtrl.text.trim()) ?? 20.0,
     };
 
-    if (_shape == 'cylindrical_vertical' || _shape == 'cylindrical_horizontal') {
+    if (_shape == 'cylindrical_vertical' ||
+        _shape == 'cylindrical_horizontal') {
       cfg['height_cm']   = double.tryParse(_heightCtrl.text.trim())   ?? 0;
       cfg['diameter_cm'] = double.tryParse(_diameterCtrl.text.trim()) ?? 0;
     } else {
-      cfg['height_cm']  = double.tryParse(_heightCtrl.text.trim())  ?? 0;
-      cfg['length_cm']  = double.tryParse(_lengthCtrl.text.trim())  ?? 0;
-      cfg['width_cm']   = double.tryParse(_widthCtrl.text.trim())   ?? 0;
+      cfg['height_cm'] = double.tryParse(_heightCtrl.text.trim())  ?? 0;
+      cfg['length_cm'] = double.tryParse(_lengthCtrl.text.trim())  ?? 0;
+      cfg['width_cm']  = double.tryParse(_widthCtrl.text.trim())   ?? 0;
     }
 
     setState(() => _sending = true);
@@ -148,10 +167,11 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       content: Text(msg),
       backgroundColor: isError ? AppColors.error : AppColors.success,
       behavior: SnackBarBehavior.floating,
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     ));
   }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -184,7 +204,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
           unselectedLabelColor: AppColors.textMuted,
           indicatorColor: AppColors.primary,
           tabs: [
-            Tab(icon: const Icon(Icons.speed_rounded, size: 18),
+            Tab(icon: const Icon(Icons.water_drop_rounded, size: 18),
                 text: s.fuelLevel),
             Tab(icon: const Icon(Icons.settings_rounded, size: 18),
                 text: s.tankConfig),
@@ -201,32 +221,69 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     );
   }
 
-  // ── Tab 1: Live monitoring ────────────────────────────────────────────────
+  // ── Tab 1 — Live monitoring ───────────────────────────────────────────────
 
   Widget _monitorTab(AppStrings s) {
-    final t = _telemetry;
+    final t     = _telemetry;
+    final pct   = (t?.fuelLevelPct ?? 0.0).clamp(0.0, 100.0);
+    final color = AppColors.fuelLevelColor(pct);
+
     return RefreshIndicator(
       onRefresh: _loadStatus,
       color: AppColors.primary,
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
         children: [
-          // Fuel gauge card
+          // ── Tank visualisation card ──────────────────────────────────────
           _Card(
             child: Column(
               children: [
-                const SizedBox(height: 8),
-                AnimatedBuilder(
-                  animation: _gaugeAnim,
-                  builder: (_, __) => _FuelGauge(
-                    pct:  (t?.fuelLevelPct ?? 0) * _gaugeAnim.value,
-                    size: 200,
+                // Shape chip
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.local_gas_station_rounded,
+                          color: AppColors.textMuted, size: 13),
+                      const SizedBox(width: 6),
+                      Text(
+                        _shapeLabel(_shape, s),
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 12),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
+
+                // Animated tank
+                AnimatedBuilder(
+                  animation: Listenable.merge([_fillAnim, _waveAnim]),
+                  builder: (_, __) {
+                    final fillRatio =
+                        (pct / 100.0) * _fillAnim.value.clamp(0.0, 1.0);
+                    final wavePhase = _waveAnim.value * 2 * math.pi;
+                    return _TankWidget(
+                      pct: pct,
+                      volumeL: t?.fuelVolumeL,
+                      fillRatio: fillRatio,
+                      wavePhase: wavePhase,
+                      color: color,
+                      shape: _shape,
+                    );
+                  },
+                ),
+
+                const SizedBox(height: 14),
                 if (t != null)
                   Text(
-                    'Updated ${_timeAgo(t.timestamp)}',
+                    '${s.lastSeen}: ${_timeAgo(t.timestamp)}',
                     style: const TextStyle(
                         color: AppColors.textMuted, fontSize: 11),
                   ),
@@ -236,7 +293,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
           const SizedBox(height: 12),
 
-          // Metrics grid
+          // ── Metrics grid ─────────────────────────────────────────────────
           GridView.count(
             crossAxisCount: 2,
             shrinkWrap: true,
@@ -286,7 +343,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
           const SizedBox(height: 12),
 
-          // Alert threshold card
+          // ── Alert status card ─────────────────────────────────────────────
           if (t != null)
             _Card(
               child: Row(
@@ -317,17 +374,22 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                         Text(
                           t.isCritical
                               ? 'LOW FUEL — below ${t.alertThresholdPct.toStringAsFixed(0)}%'
-                              : 'Fuel level OK',
+                              : t.isLow
+                                  ? 'LOW FUEL — consider refilling soon'
+                                  : 'Fuel level OK',
                           style: TextStyle(
                             color: t.isCritical
                                 ? AppColors.fuelLow
-                                : AppColors.success,
+                                : t.isLow
+                                    ? AppColors.fuelMid
+                                    : AppColors.success,
                             fontWeight: FontWeight.w700,
                             fontSize: 13,
                           ),
                         ),
                         Text(
-                          'Alert threshold: ${t.alertThresholdPct.toStringAsFixed(0)}%',
+                          '${s.alertThreshold}: '
+                          '${t.alertThresholdPct.toStringAsFixed(0)}%',
                           style: const TextStyle(
                               color: AppColors.textMuted, fontSize: 11),
                         ),
@@ -337,27 +399,26 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                 ],
               ),
             ),
-
-          const SizedBox(height: 20),
         ],
       ),
     );
   }
 
-  // ── Tab 2: Tank configuration ─────────────────────────────────────────────
+  // ── Tab 2 — Tank configuration ────────────────────────────────────────────
 
   Widget _configTab(AppStrings s) => SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Hint
+            // Hint banner
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+                border:
+                    Border.all(color: AppColors.primary.withOpacity(0.25)),
               ),
               child: Row(
                 children: [
@@ -418,7 +479,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
             const SizedBox(height: 20),
 
-            // Sensor & alert settings
+            // Sensor settings
             _SectionLabel('Sensor Settings'),
             _numField(
                 label: s.sensorOffsetCm,
@@ -469,7 +530,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                       : const Icon(Icons.send_rounded,
                           color: Colors.white, size: 18),
                   label: Text(
-                    _sending ? '${s.loading}' : s.sendConfig,
+                    _sending ? s.loading : s.sendConfig,
                     style: const TextStyle(
                         color: Colors.white,
                         fontSize: 15,
@@ -492,6 +553,14 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  String _shapeLabel(String shape, AppStrings s) {
+    switch (shape) {
+      case 'cylindrical_horizontal': return s.cylindricalHorizontal;
+      case 'rectangular':            return s.rectangular;
+      default:                       return s.cylindricalVertical;
+    }
+  }
+
   Widget _numField({
     required String label,
     required TextEditingController ctrl,
@@ -501,13 +570,11 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: const TextStyle(
-                color: AppColors.textMuted,
-                fontSize: 12,
-                fontWeight: FontWeight.w600),
-          ),
+          Text(label,
+              style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           TextField(
             controller: ctrl,
@@ -515,8 +582,8 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                 const TextInputType.numberWithOptions(decimal: true),
             style: const TextStyle(color: AppColors.text, fontSize: 15),
             decoration: InputDecoration(
-              prefixIcon: Icon(icon,
-                  color: color ?? AppColors.textMuted, size: 20),
+              prefixIcon:
+                  Icon(icon, color: color ?? AppColors.textMuted, size: 20),
               filled: true,
               fillColor: AppColors.surface,
               isDense: true,
@@ -545,6 +612,270 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
     return '${diff.inHours}h ago';
   }
+}
+
+// ── Tank widget ───────────────────────────────────────────────────────────────
+
+class _TankWidget extends StatelessWidget {
+  final double pct;
+  final double? volumeL;
+  final double fillRatio;
+  final double wavePhase;
+  final Color color;
+  final String shape;
+
+  const _TankWidget({
+    required this.pct,
+    this.volumeL,
+    required this.fillRatio,
+    required this.wavePhase,
+    required this.color,
+    required this.shape,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isHorizontal = shape == 'cylindrical_horizontal';
+
+    // Tank canvas dimensions
+    final double tankW = isHorizontal ? 300 : 160;
+    final double tankH = isHorizontal ? 150 : 280;
+
+    final String statusLabel =
+        pct > 60 ? 'NORMAL' : pct > 20 ? 'LOW' : 'CRITICAL';
+
+    return Center(
+      child: SizedBox(
+        width: tankW,
+        height: tankH,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Tank drawing
+            CustomPaint(
+              painter: _TankPainter(
+                fillRatio: fillRatio,
+                wavePhase: wavePhase,
+                color: color,
+                shape: shape,
+              ),
+              child: SizedBox(width: tankW, height: tankH),
+            ),
+
+            // Overlay text
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${pct.toStringAsFixed(1)}%',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: isHorizontal ? 30 : 38,
+                    fontWeight: FontWeight.w900,
+                    shadows: [
+                      Shadow(
+                          color: Colors.black.withOpacity(0.6),
+                          blurRadius: 10),
+                    ],
+                  ),
+                ),
+                if (volumeL != null)
+                  Text(
+                    '${volumeL!.toStringAsFixed(1)} L',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: isHorizontal ? 13 : 15,
+                      fontWeight: FontWeight.w600,
+                      shadows: [
+                        Shadow(
+                            color: Colors.black.withOpacity(0.5),
+                            blurRadius: 8),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.35),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: color.withOpacity(0.6)),
+                  ),
+                  child: Text(
+                    statusLabel,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Tank painter ──────────────────────────────────────────────────────────────
+
+class _TankPainter extends CustomPainter {
+  final double fillRatio;  // 0.0 – 1.0 (pre-animated)
+  final double wavePhase;  // 0 – 2π  (from repeating controller)
+  final Color color;
+  final String shape;
+
+  const _TankPainter({
+    required this.fillRatio,
+    required this.wavePhase,
+    required this.color,
+    required this.shape,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final tank = _tankPath(w, h);
+
+    // 1 ── Empty tank background
+    canvas.drawPath(tank, Paint()
+      ..color = color.withOpacity(0.08)
+      ..style = PaintingStyle.fill);
+
+    // 2 ── Level marker lines (25 / 50 / 75 %)
+    _drawMarkers(canvas, w, h, tank);
+
+    // 3 ── Fuel fill with animated wave surface
+    if (fillRatio > 0.002) {
+      final fuelTop = h * (1.0 - fillRatio.clamp(0.0, 1.0));
+      const waveAmp = 5.0;
+      const cycles  = 2.0;
+
+      // Build wave-top fill path
+      final fuel = Path()
+        ..moveTo(-1, h + 1)
+        ..lineTo(-1, fuelTop);
+      for (double x = 0; x <= w + 1; x++) {
+        fuel.lineTo(x,
+            fuelTop +
+                waveAmp *
+                    math.sin(
+                        x / w * cycles * 2 * math.pi + wavePhase));
+      }
+      fuel
+        ..lineTo(w + 1, h + 1)
+        ..close();
+
+      canvas.save();
+      canvas.clipPath(tank);
+
+      // Base fill
+      canvas.drawPath(fuel, Paint()
+        ..color = color.withOpacity(0.50)
+        ..style = PaintingStyle.fill);
+
+      // Top-of-fill shimmer (lighter near wave line)
+      final shimRect = Rect.fromLTWH(0, fuelTop, w, (h - fuelTop) * 0.35);
+      canvas.drawRect(shimRect, Paint()
+        ..style = PaintingStyle.fill
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            color.withOpacity(0.22),
+            color.withOpacity(0.0),
+          ],
+        ).createShader(shimRect));
+
+      // Wave surface line
+      final wave = Path()
+        ..moveTo(-1, fuelTop + waveAmp * math.sin(wavePhase));
+      for (double x = 0; x <= w + 1; x++) {
+        wave.lineTo(x,
+            fuelTop +
+                waveAmp *
+                    math.sin(
+                        x / w * cycles * 2 * math.pi + wavePhase));
+      }
+      canvas.drawPath(wave, Paint()
+        ..color = color.withOpacity(0.90)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2);
+
+      canvas.restore();
+    }
+
+    // 4 ── Left-edge highlight (glass / metal reflection)
+    canvas.save();
+    canvas.clipPath(tank);
+    final highlightRect = Rect.fromLTWH(0, 0, w * 0.09, h);
+    canvas.drawRect(highlightRect, Paint()
+      ..style = PaintingStyle.fill
+      ..shader = LinearGradient(
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+        colors: [
+          Colors.white.withOpacity(0.07),
+          Colors.transparent,
+        ],
+      ).createShader(highlightRect));
+    canvas.restore();
+
+    // 5 ── Tank outline
+    canvas.drawPath(tank, Paint()
+      ..color = color.withOpacity(0.65)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round);
+  }
+
+  Path _tankPath(double w, double h) {
+    switch (shape) {
+      case 'cylindrical_horizontal':
+        // Horizontal pill — corner radius = half the height
+        return Path()
+          ..addRRect(RRect.fromRectAndRadius(
+              Rect.fromLTWH(0, 0, w, h), Radius.circular(h / 2)));
+      case 'rectangular':
+        // Box with small rounded corners
+        return Path()
+          ..addRRect(RRect.fromRectAndRadius(
+              Rect.fromLTWH(0, 0, w, h), const Radius.circular(12)));
+      default: // cylindrical_vertical
+        // Vertical pill — corner radius = half the width
+        return Path()
+          ..addRRect(RRect.fromRectAndRadius(
+              Rect.fromLTWH(0, 0, w, h), Radius.circular(w / 2)));
+    }
+  }
+
+  void _drawMarkers(Canvas canvas, double w, double h, Path tank) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.13)
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+
+    canvas.save();
+    canvas.clipPath(tank);
+    for (final level in [0.25, 0.50, 0.75]) {
+      final y = h * (1 - level);
+      canvas.drawLine(Offset(0, y), Offset(w, y), paint);
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_TankPainter old) =>
+      old.fillRatio != fillRatio ||
+      old.wavePhase != wavePhase ||
+      old.shape != shape ||
+      old.color != color;
 }
 
 // ── Shape selector ────────────────────────────────────────────────────────────
@@ -596,10 +927,10 @@ class _ShapeSelector extends StatelessWidget {
                     child: Text(
                       e.value,
                       style: TextStyle(
-                        color: sel ? AppColors.text : AppColors.textMuted,
-                        fontWeight: sel
-                            ? FontWeight.w700
-                            : FontWeight.normal,
+                        color:
+                            sel ? AppColors.text : AppColors.textMuted,
+                        fontWeight:
+                            sel ? FontWeight.w700 : FontWeight.normal,
                         fontSize: 14,
                       ),
                     ),
@@ -654,109 +985,6 @@ class _Card extends StatelessWidget {
       );
 }
 
-// ── Circular fuel gauge ───────────────────────────────────────────────────────
-
-class _FuelGauge extends StatelessWidget {
-  final double pct;
-  final double size;
-  const _FuelGauge({required this.pct, required this.size});
-
-  @override
-  Widget build(BuildContext context) {
-    final clamped = pct.clamp(0.0, 100.0);
-    final color   = AppColors.fuelLevelColor(clamped);
-    final ratio   = clamped / 100.0;
-
-    String label;
-    if (clamped > 60)      label = 'NORMAL';
-    else if (clamped > 20) label = 'LOW';
-    else                   label = 'CRITICAL';
-
-    return SizedBox(
-      width: size,
-      height: size,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          CustomPaint(
-              size: Size(size, size),
-              painter: _ArcPainter(
-                  ratio: 1.0,
-                  color: color.withOpacity(0.12),
-                  strokeWidth: 16)),
-          CustomPaint(
-              size: Size(size, size),
-              painter: _ArcPainter(
-                  ratio: ratio, color: color, strokeWidth: 16)),
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.local_gas_station_rounded, color: color, size: 30),
-              const SizedBox(height: 4),
-              Text(
-                '${clamped.toStringAsFixed(1)}%',
-                style: TextStyle(
-                    color: color,
-                    fontSize: 32,
-                    fontWeight: FontWeight.w900),
-              ),
-              const SizedBox(height: 4),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 3),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: color.withOpacity(0.4)),
-                ),
-                child: Text(
-                  label,
-                  style: TextStyle(
-                      color: color,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ArcPainter extends CustomPainter {
-  final double ratio;
-  final Color color;
-  final double strokeWidth;
-  const _ArcPainter(
-      {required this.ratio, required this.color, required this.strokeWidth});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rect = Rect.fromCircle(
-      center: Offset(size.width / 2, size.height / 2),
-      radius: size.width / 2 - strokeWidth / 2,
-    );
-    canvas.drawArc(
-      rect,
-      math.pi * 0.75,
-      math.pi * 1.5 * ratio,
-      false,
-      Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = strokeWidth
-        ..strokeCap = StrokeCap.round,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_ArcPainter o) =>
-      o.ratio != ratio || o.color != color;
-}
-
 // ── Metric tile ───────────────────────────────────────────────────────────────
 
 class _MetricTile extends StatelessWidget {
@@ -774,7 +1002,8 @@ class _MetricTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color: color.withOpacity(0.08),
           borderRadius: BorderRadius.circular(12),
