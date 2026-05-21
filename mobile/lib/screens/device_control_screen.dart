@@ -23,7 +23,7 @@ class DeviceControlScreen extends StatefulWidget {
 }
 
 class _DeviceControlScreenState extends State<DeviceControlScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late Device _device;
   Telemetry? _telemetry;
   String _status = 'unknown';
