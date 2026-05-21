@@ -19,6 +19,73 @@ class _LogEntry {
   _LogEntry({required this.message, required this.time});
 }
 
+// ── Tank section (for multi_section shape) ────────────────────────────────────
+
+class _TankSection {
+  final String id;
+  String shape; // firmware key, never 'multi_section'
+  String label;
+  double heightM;
+  double radiusM;
+  double radiusBM;
+  double lengthM;
+  double widthM;
+
+  _TankSection({
+    required this.id,
+    this.shape    = 'rectangular',
+    this.label    = 'Section',
+    this.heightM  = 1.0,
+    this.radiusM  = 0.5,
+    this.radiusBM = 0.4,
+    this.lengthM  = 2.0,
+    this.widthM   = 1.5,
+  });
+
+  _TankSection clone() => _TankSection(
+    id: id, shape: shape, label: label,
+    heightM: heightM, radiusM: radiusM, radiusBM: radiusBM,
+    lengthM: lengthM, widthM: widthM,
+  );
+
+  double get capacityL {
+    const pi = math.pi;
+    switch (shape) {
+      case 'rectangular':         return lengthM * widthM * heightM * 1000;
+      case 'cylinder_vertical':   return pi * radiusM * radiusM * heightM * 1000;
+      case 'cylinder_horizontal': return pi * radiusM * radiusM * lengthM * 1000;
+      case 'cone_vertical':       return (1/3) * pi * radiusM * radiusM * heightM * 1000;
+      case 'ellipse_vertical':    return pi * radiusM * radiusBM * heightM * 1000;
+      case 'sphere':              return (4/3) * pi * radiusM * radiusM * radiusM * 1000;
+      case 'capsule':
+        return (pi * radiusM * radiusM * lengthM + (4/3) * pi * radiusM * radiusM * radiusM) * 1000;
+      default: return 0;
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id, 'shape': shape, 'label': label,
+    'params': {
+      'height_m': heightM, 'radius_m': radiusM, 'radius_b_m': radiusBM,
+      'length_m': lengthM, 'width_m': widthM,
+    },
+  };
+
+  factory _TankSection.fromJson(Map<String, dynamic> j) {
+    final p = (j['params'] as Map?)?.cast<String, dynamic>() ?? {};
+    return _TankSection(
+      id:       j['id']?.toString()    ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      shape:    j['shape']  as String? ?? 'rectangular',
+      label:    j['label']  as String? ?? 'Section',
+      heightM:  (p['height_m']   as num?)?.toDouble() ?? 1.0,
+      radiusM:  (p['radius_m']   as num?)?.toDouble() ?? 0.5,
+      radiusBM: (p['radius_b_m'] as num?)?.toDouble() ?? 0.4,
+      lengthM:  (p['length_m']   as num?)?.toDouble() ?? 2.0,
+      widthM:   (p['width_m']    as num?)?.toDouble() ?? 1.5,
+    );
+  }
+}
+
 // ── Shape metadata ────────────────────────────────────────────────────────────
 
 class _Shape {
@@ -92,6 +159,77 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   bool _gpsEnabled = true;
   bool _debugMode  = false;
   bool _sending    = false;
+
+  // ── Multi-section builder state ────────────────────────────────────────────
+  final List<_TankSection> _sections = [];
+
+  // ── Saved-config snapshot for dirty detection ──────────────────────────────
+  // Set when config is loaded from device, and again after a successful push.
+  String _savedShape          = 'cylinder_vertical';
+  String _savedHeight         = '1.0';
+  String _savedRadius         = '0.5';
+  String _savedRadiusB        = '0.4';
+  String _savedLength         = '2.0';
+  String _savedWidth          = '1.5';
+  String _savedThreshold      = '20';
+  int    _savedIntervalS      = 30;
+  int    _savedTzMin          = 0;
+  bool   _savedGps            = true;
+  bool   _savedDebug          = false;
+  List<_TankSection> _savedSections = [];
+  DateTime? _configSentAt;     // last time we pushed config to device
+  DateTime? _configReceivedAt; // last time device replied with its config
+
+  bool get _isDirty {
+    if (!_configLoaded) return false;
+    if (_shape            != _savedShape)                   return true;
+    if (_heightCtrl.text  != _savedHeight)                  return true;
+    if (_radiusCtrl.text  != _savedRadius)                  return true;
+    if (_radiusBCtrl.text != _savedRadiusB)                 return true;
+    if (_lengthCtrl.text  != _savedLength)                  return true;
+    if (_widthCtrl.text   != _savedWidth)                   return true;
+    if (_thresholdCtrl.text != _savedThreshold)             return true;
+    if (_reportingIntervalS != _savedIntervalS)             return true;
+    if (_timezoneOffsetMin  != _savedTzMin)                 return true;
+    if (_gpsEnabled         != _savedGps)                   return true;
+    if (_debugMode          != _savedDebug)                 return true;
+    if (_sections.length    != _savedSections.length)       return true;
+    return false;
+  }
+
+  void _saveSnapshot() {
+    _savedShape     = _shape;
+    _savedHeight    = _heightCtrl.text;
+    _savedRadius    = _radiusCtrl.text;
+    _savedRadiusB   = _radiusBCtrl.text;
+    _savedLength    = _lengthCtrl.text;
+    _savedWidth     = _widthCtrl.text;
+    _savedThreshold = _thresholdCtrl.text;
+    _savedIntervalS = _reportingIntervalS;
+    _savedTzMin     = _timezoneOffsetMin;
+    _savedGps       = _gpsEnabled;
+    _savedDebug     = _debugMode;
+    _savedSections  = _sections.map((s) => s.clone()).toList();
+  }
+
+  void _resetToSaved() {
+    setState(() {
+      _shape = _savedShape;
+      _heightCtrl.text  = _savedHeight;
+      _radiusCtrl.text  = _savedRadius;
+      _radiusBCtrl.text = _savedRadiusB;
+      _lengthCtrl.text  = _savedLength;
+      _widthCtrl.text   = _savedWidth;
+      _thresholdCtrl.text = _savedThreshold;
+      _reportingIntervalS = _savedIntervalS;
+      _timezoneOffsetMin  = _savedTzMin;
+      _gpsEnabled = _savedGps;
+      _debugMode  = _savedDebug;
+      _sections
+        ..clear()
+        ..addAll(_savedSections.map((s) => s.clone()));
+    });
+  }
 
   // ── Logs tab state ─────────────────────────────────────────────────────────
   final List<_LogEntry> _logs = [];
@@ -267,11 +405,28 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     final alertPct = (config['alert_threshold_pct'] as num?)?.toDouble();
     if (alertPct != null) _thresholdCtrl.text = alertPct.toStringAsFixed(0);
 
+    // Multi-section
+    final rawSections = config['tank_sections'];
+    if (rawSections is List) {
+      _sections
+        ..clear()
+        ..addAll(rawSections
+            .whereType<Map>()
+            .map((m) => _TankSection.fromJson(Map<String, dynamic>.from(m))));
+    }
+
+    // Received timestamp from backend (appended by handleConfigReport)
+    final receivedAt = config['receivedAt'] as String?;
+
     setState(() {
-      _configLoaded   = true;
-      _configLoading  = false;
-      _configSyncedAt = DateTime.now();
+      _configLoaded     = true;
+      _configLoading    = false;
+      _configSyncedAt   = DateTime.now();
+      _configReceivedAt = receivedAt != null ? DateTime.tryParse(receivedAt) : DateTime.now();
     });
+
+    // Snapshot for dirty detection — must run after setState so text controllers are settled
+    _saveSnapshot();
   }
 
   void _setCtrl(TextEditingController ctrl, double? val) {
@@ -284,7 +439,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   // ── Config send ───────────────────────────────────────────────────────────
 
   Future<void> _sendConfig() async {
-    if (_sending) return;
+    if (_sending || !_configLoaded) return;
     final s = AppStrings.read(context);
 
     // Build tank_shape_params in metres (native firmware format)
@@ -314,12 +469,14 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         if (h  != null) params['height_m']   = h;
       case 'sphere':
         if (r != null) params['radius_m'] = r;
-      // multi_section: no dimension fields — send shape name only
+      // multi_section: sections carry their own params
     }
 
     final firmwareCfg = <String, dynamic>{
       'tank_shape': _shape,
       if (params.isNotEmpty) 'tank_shape_params': params,
+      if (_shape == 'multi_section' && _sections.isNotEmpty)
+        'tank_sections': _sections.map((s) => s.toJson()).toList(),
       'reporting_interval_s': _reportingIntervalS,
       'timezone_offset_min':  _timezoneOffsetMin,
       'gps_enabled': _gpsEnabled,
@@ -346,8 +503,12 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
       if (!mounted) return;
       _snack(s.configSent);
-      // Device is saving to NVS; clear loaded flag so next tab visit re-syncs
-      setState(() { _configLoaded = false; });
+      setState(() {
+        _configSentAt = DateTime.now();
+        // Device will apply to NVS; re-sync on next tab visit
+        _configLoaded = false;
+      });
+      _saveSnapshot(); // mark current state as "saved"
     } on DioException catch (e) {
       if (!mounted) return;
       _snack(ApiClient.errorMessage(e), isError: true);
@@ -637,24 +798,88 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   // ── Tab 2 — Tank configuration ────────────────────────────────────────────
 
   Widget _configTab(AppStrings s) {
-    final capL = _calcCapacityL();
+    final capL     = _calcCapacityL();
+    final isOnline = _status == 'online';
+    final canEdit  = _configLoaded && isOnline;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Sync status
+
+          // ── Sync status bar ──────────────────────────────────────────────
           _ConfigSyncBar(
-            loading:   _configLoading,
-            loaded:    _configLoaded,
-            syncedAt:  _configSyncedAt,
-            onRefresh: _configLoading ? null : () {
+            loading:      _configLoading,
+            loaded:       _configLoaded,
+            syncedAt:     _configSyncedAt,
+            sentAt:       _configSentAt,
+            receivedAt:   _configReceivedAt,
+            isDirty:      _isDirty,
+            onRefresh:    _configLoading ? null : () {
               setState(() { _configLoaded = false; });
               _requestDeviceConfig();
             },
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 10),
+
+          // ── Unsaved changes banner ───────────────────────────────────────
+          if (_isDirty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.warning.withValues(alpha: 0.40)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.warning_amber_rounded,
+                    color: AppColors.warning, size: 16),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'You have unsaved changes — push the config to apply them on the device.',
+                    style: TextStyle(color: AppColors.warning, fontSize: 12),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: _resetToSaved,
+                  child: const Text('Reset',
+                      style: TextStyle(
+                          color: AppColors.warning,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          decoration: TextDecoration.underline)),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          // ── Offline notice ───────────────────────────────────────────────
+          if (!isOnline) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceLight,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: const Row(children: [
+                Icon(Icons.wifi_off_rounded, color: AppColors.textMuted, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Device is offline — configuration is read-only. Bring the device online to edit and push.',
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                  ),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          const SizedBox(height: 4),
 
           // ── Card 1: Tank Geometry ──────────────────────────────────────
           _ConfigCard(
@@ -713,26 +938,73 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                     ]),
                   ),
 
-                if (_shape == 'multi_section')
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceLight,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Row(children: [
-                      Icon(Icons.info_outline_rounded,
-                          color: AppColors.textMuted, size: 16),
-                      SizedBox(width: 8),
-                      Expanded(
+                // ── Multi-section builder ─────────────────────────────────
+                if (_shape == 'multi_section') ...[
+                  const _SectionLabel('Tank Sections'),
+                  if (_sections.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceLight,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: AppColors.border,
+                            style: BorderStyle.solid),
+                      ),
+                      child: const Center(
                         child: Text(
-                          'Multi-section tanks require configuration via the web dashboard.',
+                          'No sections yet — tap Add Section to define the tank geometry.',
                           style: TextStyle(
                               color: AppColors.textMuted, fontSize: 12),
+                          textAlign: TextAlign.center,
                         ),
                       ),
-                    ]),
-                  ),
+                    )
+                  else
+                    ..._sections.asMap().entries.map((e) {
+                      final idx = e.key;
+                      final sec = e.value;
+                      return _SectionCard(
+                        index: idx,
+                        section: sec,
+                        canEdit: canEdit,
+                        onRemove: () => setState(() => _sections.removeAt(idx)),
+                        onChanged: (updated) =>
+                            setState(() => _sections[idx] = updated),
+                      );
+                    }),
+                  const SizedBox(height: 8),
+                  if (canEdit)
+                    GestureDetector(
+                      onTap: () => setState(() => _sections.add(_TankSection(
+                        id: DateTime.now().millisecondsSinceEpoch.toString(),
+                        label: 'Section ${_sections.length + 1}',
+                      ))),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: AppColors.primary.withValues(alpha: 0.40)),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.add_rounded,
+                                color: AppColors.primary, size: 18),
+                            SizedBox(width: 6),
+                            Text('Add Section',
+                                style: TextStyle(
+                                    color: AppColors.primary,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ],
             ),
           ),
@@ -783,10 +1055,11 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                 // Quick-select chips
                 Wrap(
                   spacing: 8,
+                  runSpacing: 6,
                   children: _kIntervals.map((v) {
                     final sel = _reportingIntervalS == v;
                     return GestureDetector(
-                      onTap: () => setState(() => _reportingIntervalS = v),
+                      onTap: canEdit ? () => setState(() => _reportingIntervalS = v) : null,
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 150),
                         padding: const EdgeInsets.symmetric(
@@ -797,71 +1070,121 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                               : AppColors.surfaceLight,
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(
-                              color: sel
-                                  ? AppColors.primary
-                                  : AppColors.border),
+                              color: sel ? AppColors.primary : AppColors.border),
                         ),
                         child: Text(
                           _fmtInterval(v),
                           style: TextStyle(
                             color: sel ? Colors.white : AppColors.textMuted,
                             fontSize: 12,
-                            fontWeight: sel
-                                ? FontWeight.w700
-                                : FontWeight.normal,
+                            fontWeight: sel ? FontWeight.w700 : FontWeight.normal,
                           ),
                         ),
                       ),
                     );
                   }).toList(),
                 ),
+                const SizedBox(height: 8),
+
+                // Interval slider
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    activeTrackColor: AppColors.primary,
+                    inactiveTrackColor: AppColors.border,
+                    thumbColor: AppColors.primary,
+                    overlayColor: AppColors.primary.withValues(alpha: 0.15),
+                    trackHeight: 3,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                  ),
+                  child: Slider(
+                    min: 10, max: 3600,
+                    value: _reportingIntervalS.clamp(10, 3600).toDouble(),
+                    onChanged: canEdit
+                        ? (v) => setState(() => _reportingIntervalS = v.toInt())
+                        : null,
+                  ),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('10 s',
+                        style: TextStyle(color: AppColors.textMuted, fontSize: 10)),
+                    const Text('1 hr',
+                        style: TextStyle(color: AppColors.textMuted, fontSize: 10)),
+                  ],
+                ),
 
                 const SizedBox(height: 20),
 
                 // Timezone
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Timezone',
-                            style: TextStyle(
-                                color: AppColors.text,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600)),
-                        Text(
-                          'Offset for device timestamps',
-                          style: TextStyle(
-                              color: AppColors.textMuted, fontSize: 11),
-                        ),
-                      ],
-                    ),
-                    Text(
-                      _fmtTz(_timezoneOffsetMin),
-                      style: const TextStyle(
-                        color: AppColors.primary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.schedule_rounded,
+                        color: AppColors.textMuted, size: 16),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Timezone',
+                              style: TextStyle(
+                                  color: AppColors.text,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                          Text('Offset for device timestamps',
+                              style: TextStyle(
+                                  color: AppColors.textMuted, fontSize: 11)),
+                        ],
                       ),
                     ),
-                  ],
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          _fmtTz(_timezoneOffsetMin),
+                          style: const TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800),
+                        ),
+                        if (canEdit)
+                          GestureDetector(
+                            onTap: () => setState(() {
+                              _timezoneOffsetMin =
+                                  -(DateTime.now().timeZoneOffset.inMinutes);
+                            }),
+                            child: const Text(
+                              'Reset to device tz',
+                              style: TextStyle(
+                                  color: AppColors.primary,
+                                  fontSize: 10,
+                                  decoration: TextDecoration.underline),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ]),
                 ),
                 SliderTheme(
                   data: SliderTheme.of(context).copyWith(
                     activeTrackColor: AppColors.primary,
                     inactiveTrackColor: AppColors.border,
                     thumbColor: AppColors.primary,
-                    overlayColor: AppColors.primary.withOpacity(0.15),
+                    overlayColor: AppColors.primary.withValues(alpha: 0.15),
                     trackHeight: 3,
                   ),
                   child: Slider(
-                    min: -720,
-                    max: 720,
+                    min: -720, max: 720,
                     divisions: 48, // 30-min steps
                     value: _timezoneOffsetMin.clamp(-720, 720).toDouble(),
-                    onChanged: (v) =>
-                        setState(() => _timezoneOffsetMin = v.toInt()),
+                    onChanged: canEdit
+                        ? (v) => setState(() => _timezoneOffsetMin = v.toInt())
+                        : null,
                   ),
                 ),
 
@@ -874,20 +1197,21 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                   title: 'GPS Location',
                   subtitle: 'Include GPS in telemetry',
                   value: _gpsEnabled,
-                  onChanged: (v) => setState(() => _gpsEnabled = v),
+                  onChanged: canEdit ? (v) => setState(() => _gpsEnabled = v) : null,
                 ),
 
-                const SizedBox(height: 8),
-
-                // Debug toggle
-                _ToggleRow(
-                  icon: Icons.bug_report_outlined,
-                  iconColor: AppColors.warning,
-                  title: 'Debug Mode',
-                  subtitle: 'Verbose device logging',
-                  value: _debugMode,
-                  onChanged: (v) => setState(() => _debugMode = v),
-                ),
+                // Debug toggle — superadmin only
+                if (_isSuperAdmin) ...[
+                  const SizedBox(height: 8),
+                  _ToggleRow(
+                    icon: Icons.bug_report_outlined,
+                    iconColor: AppColors.warning,
+                    title: 'Debug Mode',
+                    subtitle: 'Verbose device logging',
+                    value: _debugMode,
+                    onChanged: canEdit ? (v) => setState(() => _debugMode = v) : null,
+                  ),
+                ],
               ],
             ),
           ),
@@ -957,56 +1281,15 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
           const SizedBox(height: 28),
 
-          // ── Send button ────────────────────────────────────────────────
-          SizedBox(
-            width: double.infinity,
-            height: 52,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: _sending
-                    ? null
-                    : const LinearGradient(
-                        colors: [AppColors.primary, Color(0xFFD97706)],
-                        begin: Alignment.centerLeft,
-                        end: Alignment.centerRight,
-                      ),
-                color: _sending ? AppColors.surfaceLight : null,
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: _sending
-                    ? null
-                    : [
-                        BoxShadow(
-                          color: AppColors.primary.withOpacity(0.35),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6),
-                        ),
-                      ],
-              ),
-              child: ElevatedButton.icon(
-                onPressed: _sending ? null : _sendConfig,
-                icon: _sending
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2.5))
-                    : const Icon(Icons.send_rounded,
-                        color: Colors.white, size: 18),
-                label: Text(
-                  _sending ? 'Sending…' : 'Send Config to Device',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.transparent,
-                  shadowColor: Colors.transparent,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
-                ),
-              ),
-            ),
+          // ── Push button ────────────────────────────────────────────────
+          _PushConfigButton(
+            sending:      _sending,
+            isDirty:      _isDirty,
+            synced:       _configLoaded,
+            syncing:      _configLoading,
+            isOnline:     isOnline,
+            onSend:       _sendConfig,
+            onReset:      _isDirty ? _resetToSaved : null,
           ),
 
           const SizedBox(height: 32),
@@ -1851,7 +2134,7 @@ class _ToggleRow extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged; // null = read-only
 
   const _ToggleRow({
     required this.icon,
@@ -1863,37 +2146,41 @@ class _ToggleRow extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) => Row(children: [
-        Container(
-          padding: const EdgeInsets.all(7),
-          decoration: BoxDecoration(
-            color: iconColor.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(8),
+  Widget build(BuildContext context) => Opacity(
+    opacity: onChanged == null ? 0.55 : 1.0,
+    child: Row(children: [
+          Container(
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              color: iconColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: iconColor, size: 18),
           ),
-          child: Icon(icon, color: iconColor, size: 18),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title,
-                  style: const TextStyle(
-                      color: AppColors.text,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600)),
-              Text(subtitle,
-                  style: const TextStyle(
-                      color: AppColors.textMuted, fontSize: 11)),
-            ],
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        color: AppColors.text,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600)),
+                Text(subtitle,
+                    style: const TextStyle(
+                        color: AppColors.textMuted, fontSize: 11)),
+              ],
+            ),
           ),
-        ),
-        Switch(
-          value: value,
-          onChanged: onChanged,
-          activeColor: AppColors.primary,
-        ),
-      ]);
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeThumbColor: AppColors.primary,
+            activeTrackColor: AppColors.primary.withValues(alpha: 0.4),
+          ),
+        ]),
+  );
 }
 
 // ── Config card ───────────────────────────────────────────────────────────────
@@ -1955,68 +2242,82 @@ class _ConfigCard extends StatelessWidget {
 class _ConfigSyncBar extends StatelessWidget {
   final bool loading;
   final bool loaded;
+  final bool isDirty;
   final DateTime? syncedAt;
+  final DateTime? sentAt;
+  final DateTime? receivedAt;
   final VoidCallback? onRefresh;
 
   const _ConfigSyncBar({
     required this.loading,
     required this.loaded,
+    required this.isDirty,
     required this.syncedAt,
+    required this.sentAt,
+    required this.receivedAt,
     required this.onRefresh,
   });
 
+  String _ts(DateTime dt) => dt.toLocal().toString().substring(0, 19).replaceFirst('T', ' ');
+
   @override
   Widget build(BuildContext context) {
+    final Color bg, border, textColor;
+    final IconData icon;
+    final String label;
+
+    if (loading) {
+      bg = AppColors.primary.withValues(alpha: 0.07);
+      border = AppColors.primary.withValues(alpha: 0.30);
+      textColor = AppColors.primary;
+      icon = Icons.sync_rounded;
+      label = 'Fetching config from device…';
+    } else if (!loaded) {
+      bg = AppColors.surfaceLight;
+      border = AppColors.border;
+      textColor = AppColors.textMuted;
+      icon = Icons.sync_rounded;
+      label = 'Not yet synced — tap Sync to fetch device config.';
+    } else if (isDirty) {
+      bg = AppColors.surfaceLight;
+      border = AppColors.border;
+      textColor = AppColors.textMuted;
+      icon = Icons.info_outline_rounded;
+      label = sentAt != null
+          ? 'Last pushed: ${_ts(sentAt!)}'
+          : 'Config not yet pushed to this device.';
+    } else {
+      bg = AppColors.success.withValues(alpha: 0.08);
+      border = AppColors.success.withValues(alpha: 0.35);
+      textColor = AppColors.success;
+      icon = Icons.check_circle_outline_rounded;
+      final parts = <String>['In sync'];
+      if (sentAt != null)     parts.add('sent ${_ts(sentAt!)}');
+      if (receivedAt != null) parts.add('received ${_ts(receivedAt!)}');
+      label = parts.join('  ·  ');
+    }
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: loading
-            ? AppColors.primary.withOpacity(0.07)
-            : loaded
-                ? AppColors.success.withOpacity(0.08)
-                : AppColors.surfaceLight,
+        color: bg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: loading
-              ? AppColors.primary.withOpacity(0.30)
-              : loaded
-                  ? AppColors.success.withOpacity(0.35)
-                  : AppColors.border,
-        ),
+        border: Border.all(color: border),
       ),
       child: Row(children: [
         SizedBox(
-          width: 20,
-          height: 20,
+          width: 20, height: 20,
           child: loading
               ? const CircularProgressIndicator(
                   color: AppColors.primary, strokeWidth: 2.2)
-              : Icon(
-                  loaded
-                      ? Icons.check_circle_outline_rounded
-                      : Icons.sync_rounded,
-                  color: loaded ? AppColors.success : AppColors.textMuted,
-                  size: 20),
+              : Icon(icon, color: textColor, size: 20),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: Text(
-            loading
-                ? 'Fetching config from device…'
-                : loaded
-                    ? 'Synced from device${syncedAt != null ? '  ·  ${syncedAt!.toLocal().toString().substring(11, 19)}' : ''}'
-                    : 'Not synced yet',
-            style: TextStyle(
-              color: loading
-                  ? AppColors.primary
-                  : loaded
-                      ? AppColors.success
-                      : AppColors.textMuted,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+          child: Text(label,
+              style: TextStyle(
+                  color: textColor, fontSize: 12, fontWeight: FontWeight.w600)),
         ),
         if (!loading)
           GestureDetector(
@@ -2024,7 +2325,7 @@ class _ConfigSyncBar extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.12),
+                color: AppColors.primary.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(6),
               ),
               child: const Row(mainAxisSize: MainAxisSize.min, children: [
@@ -2039,6 +2340,378 @@ class _ConfigSyncBar extends StatelessWidget {
             ),
           ),
       ]),
+    );
+  }
+}
+
+// ── Multi-section card ────────────────────────────────────────────────────────
+
+class _SectionCard extends StatelessWidget {
+  final int index;
+  final _TankSection section;
+  final bool canEdit;
+  final VoidCallback onRemove;
+  final ValueChanged<_TankSection> onChanged;
+
+  const _SectionCard({
+    required this.index,
+    required this.section,
+    required this.canEdit,
+    required this.onRemove,
+    required this.onChanged,
+  });
+
+  static const _sectionShapes = <_Shape>[
+    _Shape('rectangular',         'Rectangular',       'L × W × H'),
+    _Shape('cylinder_vertical',   'Vert. Cylinder',    'r × H'),
+    _Shape('cylinder_horizontal', 'Horiz. Cylinder',   'r × L'),
+    _Shape('cone_vertical',       'Vertical Cone',     '¹⁄₃ π r² H'),
+    _Shape('ellipse_vertical',    'Elliptic',          'Oval base'),
+    _Shape('sphere',              'Sphere',            '⁴⁄₃ π r³'),
+    _Shape('capsule',             'Capsule',           'r + L'),
+  ];
+
+  List<String> _fieldsFor(String shape) {
+    switch (shape) {
+      case 'rectangular':         return ['length_m', 'width_m', 'height_m'];
+      case 'cylinder_vertical':   return ['radius_m', 'height_m'];
+      case 'cylinder_horizontal': return ['radius_m', 'length_m'];
+      case 'cone_vertical':       return ['radius_m', 'height_m'];
+      case 'ellipse_vertical':    return ['radius_m', 'radius_b_m', 'height_m'];
+      case 'sphere':              return ['radius_m'];
+      case 'capsule':             return ['radius_m', 'length_m'];
+      default:                    return [];
+    }
+  }
+
+  double _getField(String f) {
+    switch (f) {
+      case 'height_m':   return section.heightM;
+      case 'radius_m':   return section.radiusM;
+      case 'radius_b_m': return section.radiusBM;
+      case 'length_m':   return section.lengthM;
+      case 'width_m':    return section.widthM;
+      default: return 0;
+    }
+  }
+
+  _TankSection _setField(String f, double v) {
+    final s = section.clone();
+    switch (f) {
+      case 'height_m':   s.heightM  = v;
+      case 'radius_m':   s.radiusM  = v;
+      case 'radius_b_m': s.radiusBM = v;
+      case 'length_m':   s.lengthM  = v;
+      case 'width_m':    s.widthM   = v;
+    }
+    return s;
+  }
+
+  static const _fieldLabels = <String, String>{
+    'length_m': 'Length', 'width_m': 'Width', 'height_m': 'Height',
+    'radius_m': 'Radius A', 'radius_b_m': 'Radius B',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final fields = _fieldsFor(section.shape);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header row
+          Row(children: [
+            Container(
+              width: 24, height: 24,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text('${index + 1}',
+                  style: const TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800)),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                enabled: canEdit,
+                style: const TextStyle(color: AppColors.text, fontSize: 13),
+                decoration: InputDecoration(
+                  hintText: 'Section label',
+                  hintStyle: const TextStyle(color: AppColors.textMuted),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 8),
+                  filled: true,
+                  fillColor: AppColors.surface,
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide:
+                          const BorderSide(color: AppColors.border)),
+                  enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide:
+                          const BorderSide(color: AppColors.border)),
+                  focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(
+                          color: AppColors.primary, width: 1.5)),
+                ),
+                controller: TextEditingController(text: section.label)
+                  ..selection = TextSelection.collapsed(
+                      offset: section.label.length),
+                onChanged: (v) => onChanged(section.clone()..label = v),
+              ),
+            ),
+            const SizedBox(width: 6),
+            // Shape picker dropdown
+            DropdownButton<String>(
+              value: section.shape,
+              isDense: true,
+              underline: const SizedBox(),
+              dropdownColor: AppColors.surface,
+              style: const TextStyle(
+                  color: AppColors.text, fontSize: 12),
+              items: _sectionShapes
+                  .map((s) => DropdownMenuItem(
+                        value: s.id,
+                        child: Text(s.name),
+                      ))
+                  .toList(),
+              onChanged: canEdit
+                  ? (v) => onChanged(section.clone()..shape = v ?? section.shape)
+                  : null,
+            ),
+            if (canEdit) ...[
+              const SizedBox(width: 4),
+              GestureDetector(
+                onTap: onRemove,
+                child: Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.delete_outline_rounded,
+                      color: AppColors.error, size: 16),
+                ),
+              ),
+            ],
+          ]),
+
+          // Dimension fields
+          if (fields.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: fields.map((f) => Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 3),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_fieldLabels[f] ?? f,
+                          style: const TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 3),
+                      TextField(
+                        enabled: canEdit,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: AppColors.text, fontSize: 12),
+                        decoration: InputDecoration(
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 8),
+                          suffixText: 'm',
+                          suffixStyle: const TextStyle(
+                              color: AppColors.textMuted, fontSize: 10),
+                          filled: true,
+                          fillColor: AppColors.surface,
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                  color: AppColors.border)),
+                          enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                  color: AppColors.border)),
+                          focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                  color: AppColors.primary, width: 1.5)),
+                        ),
+                        controller: TextEditingController(
+                            text: _getField(f).toStringAsFixed(2)),
+                        onChanged: (v) {
+                          final d = double.tryParse(v);
+                          if (d != null) onChanged(_setField(f, d));
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              )).toList(),
+            ),
+          ],
+
+          // Section capacity
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              '${section.capacityL.toStringAsFixed(0)} L',
+              style: const TextStyle(
+                  color: AppColors.primary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Push config button ────────────────────────────────────────────────────────
+
+class _PushConfigButton extends StatelessWidget {
+  final bool sending;
+  final bool isDirty;
+  final bool synced;
+  final bool syncing;
+  final bool isOnline;
+  final VoidCallback onSend;
+  final VoidCallback? onReset;
+
+  const _PushConfigButton({
+    required this.sending,
+    required this.isDirty,
+    required this.synced,
+    required this.syncing,
+    required this.isOnline,
+    required this.onSend,
+    required this.onReset,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool canPush = isDirty && synced && !sending && isOnline;
+
+    // Choose button appearance
+    final Color bgColor;
+    final String label;
+    final Widget icon;
+
+    if (sending) {
+      bgColor = AppColors.primary;
+      label = 'Pushing…';
+      icon = const SizedBox(
+          width: 18, height: 18,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5));
+    } else if (!synced && !syncing) {
+      bgColor = AppColors.surfaceLight;
+      label = 'Not synced yet';
+      icon = const Icon(Icons.lock_outline_rounded,
+          color: AppColors.textMuted, size: 18);
+    } else if (syncing) {
+      bgColor = AppColors.surfaceLight;
+      label = 'Syncing from device…';
+      icon = const SizedBox(
+          width: 18, height: 18,
+          child: CircularProgressIndicator(
+              color: AppColors.primary, strokeWidth: 2.5));
+    } else if (!isDirty) {
+      bgColor = AppColors.surfaceLight;
+      label = 'No changes to push';
+      icon = const Icon(Icons.check_circle_outline_rounded,
+          color: AppColors.success, size: 18);
+    } else {
+      bgColor = AppColors.primary;
+      label = 'Push Config to Device';
+      icon = const Icon(Icons.send_rounded, color: Colors.white, size: 18);
+    }
+
+    final textColor = canPush ? Colors.white : AppColors.textMuted;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Expanded(
+            child: SizedBox(
+              height: 50,
+              child: ElevatedButton.icon(
+                onPressed: canPush ? onSend : null,
+                icon: icon,
+                label: Text(label,
+                    style: TextStyle(
+                        color: textColor,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: bgColor,
+                  disabledBackgroundColor: bgColor,
+                  shadowColor: canPush
+                      ? AppColors.primary.withValues(alpha: 0.30)
+                      : Colors.transparent,
+                  elevation: canPush ? 4 : 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          ),
+          if (onReset != null) ...[
+            const SizedBox(width: 10),
+            SizedBox(
+              height: 50,
+              child: OutlinedButton.icon(
+                onPressed: onReset,
+                icon: const Icon(Icons.undo_rounded,
+                    color: AppColors.textMuted, size: 16),
+                label: const Text('Reset',
+                    style: TextStyle(
+                        color: AppColors.textMuted, fontSize: 13)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppColors.border),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          ],
+        ]),
+        if (!isOnline && isDirty)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              'Device is offline — bring it online to push changes.',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+            ),
+          ),
+        if (isOnline && !synced && !syncing)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              'Tap Sync to fetch the device config before pushing.',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+            ),
+          ),
+      ],
     );
   }
 }
