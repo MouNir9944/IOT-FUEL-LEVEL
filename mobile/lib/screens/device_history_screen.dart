@@ -91,9 +91,9 @@ class _DeviceHistoryScreenState extends State<DeviceHistoryScreen> {
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
-                                    '${t.fuelLevelPct.toStringAsFixed(1)}% · '
-                                    '${t.fuelVolumeL.toStringAsFixed(1)} L · '
-                                    'Pump ${t.isPumpOn ? "ON" : "OFF"}',
+                                    '${t.fuelLevelPct.toStringAsFixed(1)}%'
+                                    ' · ${t.fuelVolumeL.toStringAsFixed(1)} L'
+                                    '${t.temperatureC != null ? ' · ${t.temperatureC!.toStringAsFixed(1)}°C' : ''}',
                                     style: TextStyle(
                                       color: AppColors.fuelLevelColor(
                                           t.fuelLevelPct),

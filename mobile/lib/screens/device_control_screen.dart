@@ -2,11 +2,11 @@ import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import '../core/api_client.dart';
+import '../core/app_strings.dart';
 import '../core/constants.dart';
 import '../core/socket_service.dart';
 import '../models/device.dart';
 import '../widgets/status_badge.dart';
-import 'planning_screen.dart';
 
 class DeviceControlScreen extends StatefulWidget {
   final Device device;
@@ -27,20 +27,27 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   late Device _device;
   Telemetry? _telemetry;
   String _status = 'unknown';
-  bool _sending  = false;
-  bool _applying = false;
-  bool _syncing  = false;
-  String _controlMode = 'manual';
+  late TabController _tabs;
   late AnimationController _gaugeAnim;
+
+  // ── Tank config form state ──────────────────────────────────────────────
+  String _shape = 'cylindrical_vertical';
+  final _heightCtrl    = TextEditingController(text: '200');
+  final _diameterCtrl  = TextEditingController(text: '100');
+  final _lengthCtrl    = TextEditingController(text: '150');
+  final _widthCtrl     = TextEditingController(text: '100');
+  final _offsetCtrl    = TextEditingController(text: '5');
+  final _thresholdCtrl = TextEditingController(text: '20');
+  bool _sending = false;
 
   @override
   void initState() {
     super.initState();
-    _device      = widget.device;
-    _status      = _device.lastStatus;
-    _telemetry   = _device.lastTelemetry;
-    _controlMode = _device.effectiveControlMode;
-    _gaugeAnim   = AnimationController(
+    _device    = widget.device;
+    _status    = _device.lastStatus;
+    _telemetry = _device.lastTelemetry;
+    _tabs      = TabController(length: 2, vsync: this);
+    _gaugeAnim = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 900));
     _gaugeAnim.forward();
     _loadStatus();
@@ -49,7 +56,14 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   @override
   void dispose() {
+    _tabs.dispose();
     _gaugeAnim.dispose();
+    _heightCtrl.dispose();
+    _diameterCtrl.dispose();
+    _lengthCtrl.dispose();
+    _widthCtrl.dispose();
+    _offsetCtrl.dispose();
+    _thresholdCtrl.dispose();
     SocketService.off('telemetry_update',     id: 'device_control');
     SocketService.off('device_status_change', id: 'device_control');
     SocketService.removeReconnectCallback(_onSocketReconnect);
@@ -79,88 +93,69 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   Future<void> _loadStatus() async {
     try {
-      final resp = await ApiClient.instance.get('/devices/${_device.id}/status');
+      final resp =
+          await ApiClient.instance.get('/devices/${_device.id}/status');
       if (!mounted) return;
       final d = Device.fromJson(
           Map<String, dynamic>.from(resp.data['device'] as Map));
       setState(() {
-        _device      = d;
-        _status      = d.lastStatus;
-        _telemetry   = d.lastTelemetry;
-        _controlMode = d.effectiveControlMode;
+        _device    = d;
+        _status    = d.lastStatus;
+        _telemetry = d.lastTelemetry;
       });
       SocketService.subscribeToDevice(_device.deviceId);
     } catch (_) {}
   }
 
-  Future<void> _sendCmd(Map<String, dynamic> cmd) async {
+  Future<void> _sendConfig() async {
     if (_sending) return;
+    final s = AppStrings.read(context);
+
+    // Build payload based on shape
+    final Map<String, dynamic> cfg = {
+      'shape':                _shape,
+      'sensor_offset_cm':     double.tryParse(_offsetCtrl.text.trim())    ?? 5.0,
+      'alert_threshold_pct':  double.tryParse(_thresholdCtrl.text.trim()) ?? 20.0,
+    };
+
+    if (_shape == 'cylindrical_vertical' || _shape == 'cylindrical_horizontal') {
+      cfg['height_cm']   = double.tryParse(_heightCtrl.text.trim())   ?? 0;
+      cfg['diameter_cm'] = double.tryParse(_diameterCtrl.text.trim()) ?? 0;
+    } else {
+      cfg['height_cm']  = double.tryParse(_heightCtrl.text.trim())  ?? 0;
+      cfg['length_cm']  = double.tryParse(_lengthCtrl.text.trim())  ?? 0;
+      cfg['width_cm']   = double.tryParse(_widthCtrl.text.trim())   ?? 0;
+    }
+
     setState(() => _sending = true);
     try {
       await ApiClient.instance.post(
-          '/devices/${_device.id}/command', data: cmd);
+        '/devices/${_device.id}/command',
+        data: {'cmd': 'set_config', 'value': cfg},
+      );
+      if (!mounted) return;
+      _snack(s.configSent);
     } on DioException catch (e) {
       if (!mounted) return;
-      _showSnack(ApiClient.errorMessage(e), isError: true);
+      _snack(ApiClient.errorMessage(e), isError: true);
     } finally {
       if (mounted) setState(() => _sending = false);
     }
   }
 
-  Future<void> _togglePump() async {
-    final newState = _telemetry?.isPumpOn == true ? 'STOP' : 'START';
-    await _sendCmd({'cmd': 'set_pump', 'value': newState});
-  }
-
-  Future<void> _toggleControlMode() async {
-    final newMode = _controlMode == 'auto' ? 'manual' : 'auto';
-    setState(() => _applying = true);
-    try {
-      await ApiClient.instance.post(
-        '/devices/${_device.id}/command',
-        data: {'cmd': 'set_control_mode', 'value': newMode},
-      );
-      if (!mounted) return;
-      setState(() => _controlMode = newMode);
-    } on DioException catch (e) {
-      if (!mounted) return;
-      _showSnack(ApiClient.errorMessage(e), isError: true);
-    } finally {
-      if (mounted) setState(() => _applying = false);
-    }
-  }
-
-  Future<void> _syncPlans() async {
-    if (_syncing) return;
-    setState(() => _syncing = true);
-    try {
-      final resp =
-          await ApiClient.instance.post('/devices/${_device.id}/plans/sync');
-      if (!mounted) return;
-      final count = resp.data['count'] as int? ?? 0;
-      _showSnack(count > 0
-          ? '$count schedule(s) sent to device'
-          : 'No schedules to send');
-    } on DioException catch (e) {
-      if (!mounted) return;
-      _showSnack(ApiClient.errorMessage(e), isError: true);
-    } finally {
-      if (mounted) setState(() => _syncing = false);
-    }
-  }
-
-  void _showSnack(String msg, {bool isError = false}) {
+  void _snack(String msg, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(msg),
       backgroundColor: isError ? AppColors.error : AppColors.success,
+      behavior: SnackBarBehavior.floating,
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     ));
   }
 
-  bool get _isOnline => _status == 'online';
-
   @override
   Widget build(BuildContext context) {
-    final t = _telemetry;
+    final s = AppStrings.of(context);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -169,396 +164,380 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              _device.displayName,
-              style: const TextStyle(
-                  color: AppColors.text,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700),
-            ),
+            Text(_device.displayName,
+                style: const TextStyle(
+                    color: AppColors.text,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700)),
             StatusBadge(status: _status),
           ],
         ),
         actions: [
-          if (widget.isAdmin)
-            IconButton(
-              icon: const Icon(Icons.calendar_month_rounded,
-                  color: AppColors.textMuted),
-              tooltip: 'Pump Schedule',
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => PlanningScreen(
-                      device: _device, isAdmin: widget.isAdmin),
-                ),
-              ),
-            ),
           IconButton(
-            icon: const Icon(Icons.refresh_rounded,
-                color: AppColors.textMuted),
+            icon: const Icon(Icons.refresh_rounded, color: AppColors.textMuted),
             onPressed: _loadStatus,
           ),
         ],
+        bottom: TabBar(
+          controller: _tabs,
+          labelColor: Colors.white,
+          unselectedLabelColor: AppColors.textMuted,
+          indicatorColor: AppColors.primary,
+          tabs: [
+            Tab(icon: const Icon(Icons.speed_rounded, size: 18),
+                text: s.fuelLevel),
+            Tab(icon: const Icon(Icons.settings_rounded, size: 18),
+                text: s.tankConfig),
+          ],
+        ),
       ),
-      body: RefreshIndicator(
-        onRefresh: _loadStatus,
-        color: AppColors.primary,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            // ── Fuel level gauge ─────────────────────────────────────────────
-            _SectionCard(
-              child: Column(
-                children: [
-                  const Text(
-                    'Fuel Level',
-                    style: TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.5),
+      body: TabBarView(
+        controller: _tabs,
+        children: [
+          _monitorTab(s),
+          _configTab(s),
+        ],
+      ),
+    );
+  }
+
+  // ── Tab 1: Live monitoring ────────────────────────────────────────────────
+
+  Widget _monitorTab(AppStrings s) {
+    final t = _telemetry;
+    return RefreshIndicator(
+      onRefresh: _loadStatus,
+      color: AppColors.primary,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Fuel gauge card
+          _Card(
+            child: Column(
+              children: [
+                const SizedBox(height: 8),
+                AnimatedBuilder(
+                  animation: _gaugeAnim,
+                  builder: (_, __) => _FuelGauge(
+                    pct:  (t?.fuelLevelPct ?? 0) * _gaugeAnim.value,
+                    size: 200,
                   ),
-                  const SizedBox(height: 16),
-                  AnimatedBuilder(
-                    animation: _gaugeAnim,
-                    builder: (_, __) => _FuelGauge(
-                      pct: (t?.fuelLevelPct ?? 0) * _gaugeAnim.value,
-                      size: 180,
-                    ),
+                ),
+                const SizedBox(height: 16),
+                if (t != null)
+                  Text(
+                    'Updated ${_timeAgo(t.timestamp)}',
+                    style: const TextStyle(
+                        color: AppColors.textMuted, fontSize: 11),
                   ),
-                  const SizedBox(height: 16),
-                  // Metrics row
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _MetricTile(
-                        label: 'Volume',
-                        value: t != null
-                            ? '${t.fuelVolumeL.toStringAsFixed(1)} L'
-                            : '—',
-                        icon: Icons.opacity_rounded,
-                        color: AppColors.info,
-                      ),
-                      if (t?.temperatureC != null)
-                        _MetricTile(
-                          label: 'Temperature',
-                          value: '${t!.temperatureC!.toStringAsFixed(1)} °C',
-                          icon: Icons.thermostat_rounded,
-                          color: t.temperatureC! > 50
-                              ? AppColors.error
-                              : AppColors.warning,
-                        ),
-                      _MetricTile(
-                        label: 'Status',
-                        value: _status.toUpperCase(),
-                        icon: _isOnline
-                            ? Icons.wifi_rounded
-                            : Icons.wifi_off_rounded,
-                        color: AppColors.statusColor(_status),
-                      ),
-                    ],
-                  ),
-                  if (t != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      'Updated ${_timeAgo(t.timestamp)}',
-                      style: const TextStyle(
-                          color: AppColors.textMuted, fontSize: 10),
-                    ),
-                  ],
-                ],
-              ),
+              ],
             ),
+          ),
 
-            const SizedBox(height: 12),
+          const SizedBox(height: 12),
 
-            // ── Control mode ─────────────────────────────────────────────────
-            _SectionCard(
+          // Metrics grid
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 2.2,
+            children: [
+              _MetricTile(
+                label: s.fuelVolume,
+                value: t != null
+                    ? '${t.fuelVolumeL.toStringAsFixed(1)} L'
+                    : '—',
+                icon: Icons.opacity_rounded,
+                color: AppColors.info,
+              ),
+              _MetricTile(
+                label: s.temperature,
+                value: t?.temperatureC != null
+                    ? '${t!.temperatureC!.toStringAsFixed(1)} °C'
+                    : '—',
+                icon: Icons.thermostat_rounded,
+                color: (t?.temperatureC ?? 0) > 50
+                    ? AppColors.error
+                    : AppColors.warning,
+              ),
+              _MetricTile(
+                label: s.batteryLevel,
+                value: t?.batteryPct != null
+                    ? '${t!.batteryPct!.toStringAsFixed(0)} %'
+                    : '—',
+                icon: Icons.battery_charging_full_rounded,
+                color: (t?.batteryPct ?? 100) < 20
+                    ? AppColors.error
+                    : AppColors.success,
+              ),
+              _MetricTile(
+                label: s.signalStrength,
+                value: t?.rssi != null ? '${t!.rssi} dBm' : '—',
+                icon: Icons.signal_wifi_4_bar_rounded,
+                color: (t?.rssi ?? 0) < -80
+                    ? AppColors.error
+                    : AppColors.success,
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // Alert threshold card
+          if (t != null)
+            _Card(
               child: Row(
                 children: [
-                  Icon(
-                    _controlMode == 'auto'
-                        ? Icons.calendar_month_rounded
-                        : Icons.tune_rounded,
-                    color: _controlMode == 'auto'
-                        ? AppColors.primary
-                        : AppColors.warning,
-                    size: 20,
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: t.isCritical
+                          ? AppColors.fuelLow.withOpacity(0.15)
+                          : AppColors.success.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      t.isCritical
+                          ? Icons.warning_amber_rounded
+                          : Icons.check_circle_outline_rounded,
+                      color: t.isCritical
+                          ? AppColors.fuelLow
+                          : AppColors.success,
+                      size: 20,
+                    ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          _controlMode == 'auto'
-                              ? 'Auto (Schedule)'
-                              : 'Manual Control',
+                          t.isCritical
+                              ? 'LOW FUEL — below ${t.alertThresholdPct.toStringAsFixed(0)}%'
+                              : 'Fuel level OK',
                           style: TextStyle(
-                            color: _controlMode == 'auto'
-                                ? AppColors.primary
-                                : AppColors.warning,
+                            color: t.isCritical
+                                ? AppColors.fuelLow
+                                : AppColors.success,
                             fontWeight: FontWeight.w700,
-                            fontSize: 14,
+                            fontSize: 13,
                           ),
                         ),
                         Text(
-                          _controlMode == 'auto'
-                              ? 'Pump follows your schedule'
-                              : 'Pump controlled manually below',
+                          'Alert threshold: ${t.alertThresholdPct.toStringAsFixed(0)}%',
                           style: const TextStyle(
                               color: AppColors.textMuted, fontSize: 11),
                         ),
                       ],
                     ),
                   ),
-                  if (_applying)
-                    const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: AppColors.primary),
-                    )
-                  else
-                    Switch(
-                      value: _controlMode == 'auto',
-                      onChanged:
-                          _isOnline ? (_) => _toggleControlMode() : null,
-                      activeColor: AppColors.primary,
-                    ),
                 ],
               ),
             ),
 
-            // ── Pump control (manual mode only) ──────────────────────────────
-            if (_controlMode != 'auto') ...[
-              const SizedBox(height: 12),
-              _SectionCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Pump Control',
-                      style: TextStyle(
-                          color: AppColors.text,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 15),
-                    ),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _PumpButton(
-                            label: 'Start Pump',
-                            icon: Icons.play_circle_filled_rounded,
-                            color: AppColors.success,
-                            enabled: _isOnline && !_sending &&
-                                t?.isPumpOn != true,
-                            active: t?.isPumpOn == true,
-                            onTap: _togglePump,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _PumpButton(
-                            label: 'Stop Pump',
-                            icon: Icons.stop_circle_rounded,
-                            color: AppColors.error,
-                            enabled: _isOnline && !_sending &&
-                                t?.isPumpOn == true,
-                            active: t?.isPumpOn != true,
-                            onTap: _togglePump,
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (t != null) ...[
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          _PumpStateDot(isRunning: t.isPumpOn),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Pump is ${t.isPumpOn ? "RUNNING" : "STOPPED"}',
-                            style: const TextStyle(
-                                color: AppColors.textMuted, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-
-            const SizedBox(height: 12),
-
-            // ── Alert threshold ───────────────────────────────────────────────
-            if (t != null)
-              _SectionCard(
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: AppColors.fuelLow.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Icon(Icons.notifications_active_rounded,
-                          color: AppColors.fuelLow, size: 18),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Low Fuel Alert',
-                            style: TextStyle(
-                                color: AppColors.text,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 14),
-                          ),
-                          Text(
-                            'Triggers at ${t.alertThresholdPct.toStringAsFixed(0)}% fuel level',
-                            style: const TextStyle(
-                                color: AppColors.textMuted, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: t.isCritical
-                            ? AppColors.fuelLow.withOpacity(0.15)
-                            : AppColors.success.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: t.isCritical
-                              ? AppColors.fuelLow.withOpacity(0.5)
-                              : AppColors.success.withOpacity(0.4),
-                        ),
-                      ),
-                      child: Text(
-                        t.isCritical ? 'TRIGGERED' : 'OK',
-                        style: TextStyle(
-                          color: t.isCritical
-                              ? AppColors.fuelLow
-                              : AppColors.success,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-            const SizedBox(height: 12),
-
-            // ── Active schedule ───────────────────────────────────────────────
-            if (t != null && _controlMode == 'auto')
-              _SectionCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Active Pump Schedule',
-                      style: TextStyle(
-                          color: AppColors.text,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 15),
-                    ),
-                    const SizedBox(height: 10),
-                    if (t.planActive == true && t.planName != null)
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: AppColors.primary.withOpacity(0.3)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.play_circle_outline_rounded,
-                                size: 18, color: AppColors.primary),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    t.planName!,
-                                    style: const TextStyle(
-                                        color: AppColors.primary,
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 13),
-                                  ),
-                                  if (t.sliceStart != null &&
-                                      t.sliceStop != null)
-                                    Text(
-                                      '${t.sliceStart} → ${t.sliceStop}',
-                                      style: const TextStyle(
-                                          color: AppColors.textMuted,
-                                          fontSize: 11),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    else
-                      Row(
-                        children: const [
-                          Icon(Icons.schedule_rounded,
-                              size: 14, color: AppColors.textMuted),
-                          SizedBox(width: 6),
-                          Text(
-                            'No active pump schedule right now',
-                            style: TextStyle(
-                                color: AppColors.textMuted, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed:
-                            _isOnline && !_syncing ? _syncPlans : null,
-                        icon: _syncing
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white),
-                              )
-                            : const Icon(Icons.send_rounded, size: 16),
-                        label: Text(
-                            _syncing ? 'Sending…' : 'Send Schedules to Device'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 11),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10)),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-            const SizedBox(height: 24),
-          ],
-        ),
+          const SizedBox(height: 20),
+        ],
       ),
     );
   }
+
+  // ── Tab 2: Tank configuration ─────────────────────────────────────────────
+
+  Widget _configTab(AppStrings s) => SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Hint
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded,
+                      color: AppColors.primary, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      s.tankConfigHint,
+                      style: const TextStyle(
+                          color: AppColors.textMuted, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Shape selector
+            _SectionLabel(s.tankShape),
+            _ShapeSelector(
+              selected: _shape,
+              onChanged: (v) => setState(() => _shape = v),
+              labels: {
+                'cylindrical_vertical':   s.cylindricalVertical,
+                'cylindrical_horizontal': s.cylindricalHorizontal,
+                'rectangular':            s.rectangular,
+              },
+            ),
+
+            const SizedBox(height: 20),
+
+            // Dimensions
+            _SectionLabel('Dimensions'),
+            _numField(
+                label: s.heightCm,
+                ctrl: _heightCtrl,
+                icon: Icons.height_rounded),
+            const SizedBox(height: 12),
+
+            if (_shape != 'rectangular') ...[
+              _numField(
+                  label: s.diameterCm,
+                  ctrl: _diameterCtrl,
+                  icon: Icons.circle_outlined),
+            ] else ...[
+              _numField(
+                  label: s.lengthCm,
+                  ctrl: _lengthCtrl,
+                  icon: Icons.straighten_rounded),
+              const SizedBox(height: 12),
+              _numField(
+                  label: s.widthCm,
+                  ctrl: _widthCtrl,
+                  icon: Icons.straighten_rounded),
+            ],
+
+            const SizedBox(height: 20),
+
+            // Sensor & alert settings
+            _SectionLabel('Sensor Settings'),
+            _numField(
+                label: s.sensorOffsetCm,
+                ctrl: _offsetCtrl,
+                icon: Icons.vertical_align_bottom_rounded),
+            const SizedBox(height: 12),
+            _numField(
+                label: s.alertThresholdPct,
+                ctrl: _thresholdCtrl,
+                icon: Icons.notifications_active_rounded,
+                color: AppColors.fuelLow),
+
+            const SizedBox(height: 28),
+
+            // Send button
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: _sending
+                      ? null
+                      : const LinearGradient(
+                          colors: [AppColors.primary, Color(0xFFD97706)],
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                        ),
+                  color: _sending ? AppColors.surfaceLight : null,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: _sending
+                      ? null
+                      : [
+                          BoxShadow(
+                            color: AppColors.primary.withOpacity(0.35),
+                            blurRadius: 16,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                ),
+                child: ElevatedButton.icon(
+                  onPressed: _sending ? null : _sendConfig,
+                  icon: _sending
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2.5))
+                      : const Icon(Icons.send_rounded,
+                          color: Colors.white, size: 18),
+                  label: Text(
+                    _sending ? '${s.loading}' : s.sendConfig,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 32),
+          ],
+        ),
+      );
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  Widget _numField({
+    required String label,
+    required TextEditingController ctrl,
+    required IconData icon,
+    Color? color,
+  }) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 12,
+                fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          TextField(
+            controller: ctrl,
+            keyboardType:
+                const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(color: AppColors.text, fontSize: 15),
+            decoration: InputDecoration(
+              prefixIcon: Icon(icon,
+                  color: color ?? AppColors.textMuted, size: 20),
+              filled: true,
+              fillColor: AppColors.surface,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                  vertical: 14, horizontal: 14),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:
+                      const BorderSide(color: AppColors.border)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:
+                      const BorderSide(color: AppColors.border)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(
+                      color: color ?? AppColors.primary, width: 2)),
+            ),
+          ),
+        ],
+      );
 
   String _timeAgo(DateTime dt) {
     final diff = DateTime.now().difference(dt);
@@ -568,24 +547,130 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   }
 }
 
+// ── Shape selector ────────────────────────────────────────────────────────────
+
+class _ShapeSelector extends StatelessWidget {
+  final String selected;
+  final ValueChanged<String> onChanged;
+  final Map<String, String> labels;
+
+  const _ShapeSelector({
+    required this.selected,
+    required this.onChanged,
+    required this.labels,
+  });
+
+  @override
+  Widget build(BuildContext context) => Column(
+        children: labels.entries.map((e) {
+          final sel = selected == e.key;
+          return GestureDetector(
+            onTap: () => onChanged(e.key),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 13),
+              decoration: BoxDecoration(
+                color: sel
+                    ? AppColors.primary.withOpacity(0.12)
+                    : AppColors.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: sel ? AppColors.primary : AppColors.border,
+                    width: sel ? 1.5 : 1),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    e.key == 'rectangular'
+                        ? Icons.crop_square_rounded
+                        : e.key == 'cylindrical_horizontal'
+                            ? Icons.panorama_fish_eye_rounded
+                            : Icons.circle_outlined,
+                    color: sel ? AppColors.primary : AppColors.textMuted,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      e.value,
+                      style: TextStyle(
+                        color: sel ? AppColors.text : AppColors.textMuted,
+                        fontWeight: sel
+                            ? FontWeight.w700
+                            : FontWeight.normal,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                  if (sel)
+                    const Icon(Icons.check_circle_rounded,
+                        color: AppColors.primary, size: 18),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      );
+}
+
+// ── Section label ─────────────────────────────────────────────────────────────
+
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Text(
+          text.toUpperCase(),
+          style: const TextStyle(
+            color: AppColors.textMuted,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.6,
+          ),
+        ),
+      );
+}
+
+// ── Card wrapper ──────────────────────────────────────────────────────────────
+
+class _Card extends StatelessWidget {
+  final Widget child;
+  const _Card({required this.child});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: child,
+      );
+}
+
 // ── Circular fuel gauge ───────────────────────────────────────────────────────
 
 class _FuelGauge extends StatelessWidget {
   final double pct;
   final double size;
-
   const _FuelGauge({required this.pct, required this.size});
 
   @override
   Widget build(BuildContext context) {
-    final clampedPct = pct.clamp(0.0, 100.0);
-    final color      = AppColors.fuelLevelColor(clampedPct);
-    final ratio      = clampedPct / 100.0;
+    final clamped = pct.clamp(0.0, 100.0);
+    final color   = AppColors.fuelLevelColor(clamped);
+    final ratio   = clamped / 100.0;
 
     String label;
-    if (clampedPct > 60) label = 'NORMAL';
-    else if (clampedPct > 20) label = 'LOW';
-    else label = 'CRITICAL';
+    if (clamped > 60)      label = 'NORMAL';
+    else if (clamped > 20) label = 'LOW';
+    else                   label = 'CRITICAL';
 
     return SizedBox(
       width: size,
@@ -593,42 +678,32 @@ class _FuelGauge extends StatelessWidget {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Background arc
           CustomPaint(
-            size: Size(size, size),
-            painter: _ArcPainter(
-              ratio: 1.0,
-              color: color.withOpacity(0.12),
-              strokeWidth: 14,
-            ),
-          ),
-          // Foreground arc
+              size: Size(size, size),
+              painter: _ArcPainter(
+                  ratio: 1.0,
+                  color: color.withOpacity(0.12),
+                  strokeWidth: 16)),
           CustomPaint(
-            size: Size(size, size),
-            painter: _ArcPainter(
-              ratio: ratio,
-              color: color,
-              strokeWidth: 14,
-            ),
-          ),
-          // Center text
+              size: Size(size, size),
+              painter: _ArcPainter(
+                  ratio: ratio, color: color, strokeWidth: 16)),
           Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.local_gas_station_rounded, color: color, size: 28),
+              Icon(Icons.local_gas_station_rounded, color: color, size: 30),
               const SizedBox(height: 4),
               Text(
-                '${clampedPct.toStringAsFixed(1)}%',
+                '${clamped.toStringAsFixed(1)}%',
                 style: TextStyle(
-                  color: color,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                ),
+                    color: color,
+                    fontSize: 32,
+                    fontWeight: FontWeight.w900),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 4),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 3),
                 decoration: BoxDecoration(
                   color: color.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(20),
@@ -637,11 +712,10 @@ class _FuelGauge extends StatelessWidget {
                 child: Text(
                   label,
                   style: TextStyle(
-                    color: color,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.8,
-                  ),
+                      color: color,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.8),
                 ),
               ),
             ],
@@ -656,7 +730,6 @@ class _ArcPainter extends CustomPainter {
   final double ratio;
   final Color color;
   final double strokeWidth;
-
   const _ArcPainter(
       {required this.ratio, required this.color, required this.strokeWidth});
 
@@ -666,104 +739,22 @@ class _ArcPainter extends CustomPainter {
       center: Offset(size.width / 2, size.height / 2),
       radius: size.width / 2 - strokeWidth / 2,
     );
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth
-      ..strokeCap = StrokeCap.round;
-
-    const startAngle = math.pi * 0.75;
-    final sweepAngle = math.pi * 1.5 * ratio;
-    canvas.drawArc(rect, startAngle, sweepAngle, false, paint);
+    canvas.drawArc(
+      rect,
+      math.pi * 0.75,
+      math.pi * 1.5 * ratio,
+      false,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth
+        ..strokeCap = StrokeCap.round,
+    );
   }
 
   @override
-  bool shouldRepaint(_ArcPainter old) =>
-      old.ratio != ratio || old.color != color;
-}
-
-// ── Section card ──────────────────────────────────────────────────────────────
-
-class _SectionCard extends StatelessWidget {
-  final Widget child;
-  const _SectionCard({required this.child});
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.border),
-        ),
-        child: child,
-      );
-}
-
-// ── Pump button ───────────────────────────────────────────────────────────────
-
-class _PumpButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final Color color;
-  final bool enabled;
-  final bool active;
-  final VoidCallback onTap;
-
-  const _PumpButton({
-    required this.label,
-    required this.icon,
-    required this.color,
-    required this.enabled,
-    required this.active,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: enabled ? onTap : null,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: active ? color : color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: color.withOpacity(active ? 1 : 0.4)),
-          ),
-          child: Column(
-            children: [
-              Icon(icon,
-                  color: active ? Colors.white : color, size: 26),
-              const SizedBox(height: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: active ? Colors.white : color,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-}
-
-// ── Pump state dot ────────────────────────────────────────────────────────────
-
-class _PumpStateDot extends StatelessWidget {
-  final bool isRunning;
-  const _PumpStateDot({required this.isRunning});
-
-  @override
-  Widget build(BuildContext context) => Container(
-        width: 8,
-        height: 8,
-        decoration: BoxDecoration(
-          color: isRunning ? AppColors.success : AppColors.textMuted,
-          shape: BoxShape.circle,
-        ),
-      );
+  bool shouldRepaint(_ArcPainter o) =>
+      o.ratio != ratio || o.color != color;
 }
 
 // ── Metric tile ───────────────────────────────────────────────────────────────
@@ -783,28 +774,32 @@ class _MetricTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(12),
-        constraints: const BoxConstraints(minWidth: 80),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color: color.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(color: color.withOpacity(0.25)),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(height: 6),
-            Text(
-              value,
-              style: TextStyle(
-                  color: color, fontSize: 15, fontWeight: FontWeight.w800),
+            Icon(icon, color: color, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(value,
+                      style: TextStyle(
+                          color: color,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800)),
+                  Text(label,
+                      style: const TextStyle(
+                          color: AppColors.textMuted, fontSize: 10)),
+                ],
+              ),
             ),
-            const SizedBox(height: 2),
-            Text(label,
-                style: const TextStyle(
-                    color: AppColors.textMuted, fontSize: 11)),
           ],
         ),
       );

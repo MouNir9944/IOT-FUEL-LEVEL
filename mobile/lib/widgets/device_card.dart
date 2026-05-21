@@ -17,10 +17,8 @@ class DeviceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t           = device.lastTelemetry;
-    final effectiveMode = device.effectiveControlMode;
-    final isAuto      = effectiveMode.toLowerCase() == 'auto';
-    final isOnline    = device.lastStatus == 'online';
+    final t        = device.lastTelemetry;
+    final isOnline = device.lastStatus == 'online';
 
     return GestureDetector(
       onTap: onTap,
@@ -31,10 +29,8 @@ class DeviceCard extends StatelessWidget {
           border: Border.all(
             color: t != null && t.isCritical
                 ? AppColors.fuelLow.withOpacity(0.6)
-                : isAuto
-                    ? AppColors.primary.withOpacity(0.45)
-                    : AppColors.border,
-            width: (t != null && t.isCritical) || isAuto ? 1.5 : 1.0,
+                : AppColors.border,
+            width: t != null && t.isCritical ? 1.5 : 1.0,
           ),
         ),
         padding: const EdgeInsets.all(16),
@@ -88,14 +84,7 @@ class DeviceCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    StatusBadge(status: device.lastStatus),
-                    const SizedBox(height: 6),
-                    _ControlModeBadge(controlMode: effectiveMode),
-                  ],
-                ),
+                StatusBadge(status: device.lastStatus),
               ],
             ),
 
@@ -107,7 +96,8 @@ class DeviceCard extends StatelessWidget {
 
               // Metrics row
               Container(
-                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                 decoration: BoxDecoration(
                   color: AppColors.surfaceLight,
                   borderRadius: BorderRadius.circular(10),
@@ -124,16 +114,19 @@ class DeviceCard extends StatelessWidget {
                       '${t.fuelVolumeL.toStringAsFixed(1)} L',
                       'Volume',
                     ),
-                    _Metric(
-                      t.isPumpOn ? 'ON' : 'OFF',
-                      'Pump',
-                      valueColor: t.isPumpOn ? AppColors.success : AppColors.textMuted,
-                    ),
                     if (t.temperatureC != null)
                       _Metric(
                         '${t.temperatureC!.toStringAsFixed(1)}°C',
                         'Temp',
-                        valueColor: t.temperatureC! > 50 ? AppColors.error : null,
+                        valueColor:
+                            t.temperatureC! > 50 ? AppColors.error : null,
+                      ),
+                    if (t.batteryPct != null)
+                      _Metric(
+                        '${t.batteryPct!.toStringAsFixed(0)}%',
+                        'Battery',
+                        valueColor:
+                            t.batteryPct! < 20 ? AppColors.error : null,
                       ),
                   ],
                 ),
@@ -152,27 +145,6 @@ class DeviceCard extends StatelessWidget {
                   icon: Icons.warning_rounded,
                   color: AppColors.fuelMid,
                   message: 'Low fuel – consider refilling soon',
-                ),
-
-              // Active schedule banner
-              if (isAuto && t.planActive == true && t.planName != null)
-                _ActivePlanBanner(telemetry: t),
-
-              if (isAuto && t.planActive == false)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Row(
-                    children: const [
-                      Icon(Icons.schedule_rounded,
-                          size: 13, color: AppColors.textMuted),
-                      SizedBox(width: 4),
-                      Text(
-                        'No active pump schedule right now',
-                        style:
-                            TextStyle(color: AppColors.textMuted, fontSize: 11),
-                      ),
-                    ],
-                  ),
                 ),
             ],
 
@@ -233,9 +205,9 @@ class _FuelGaugeBar extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
+            const Text(
               'Fuel Level',
-              style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+              style: TextStyle(color: AppColors.textMuted, fontSize: 11),
             ),
             Text(
               '${pct.toStringAsFixed(1)}%',
@@ -294,103 +266,6 @@ class _AlertBanner extends StatelessWidget {
           ],
         ),
       );
-}
-
-// ── Active plan banner ────────────────────────────────────────────────────────
-
-class _ActivePlanBanner extends StatelessWidget {
-  final Telemetry telemetry;
-  const _ActivePlanBanner({required this.telemetry});
-
-  @override
-  Widget build(BuildContext context) {
-    final t         = telemetry;
-    final timeRange = (t.sliceStart != null && t.sliceStop != null)
-        ? '${t.sliceStart} → ${t.sliceStop}'
-        : null;
-
-    return Container(
-      margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: AppColors.primary.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.primary.withOpacity(0.3)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.play_circle_outline_rounded,
-              size: 14, color: AppColors.primary),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  t.planName ?? 'Active schedule',
-                  style: const TextStyle(
-                      color: AppColors.primary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (timeRange != null)
-                  Text(timeRange,
-                      style: const TextStyle(
-                          color: AppColors.textMuted, fontSize: 10)),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Control mode badge ────────────────────────────────────────────────────────
-
-class _ControlModeBadge extends StatelessWidget {
-  final String controlMode;
-  const _ControlModeBadge({required this.controlMode});
-
-  @override
-  Widget build(BuildContext context) {
-    final isAuto = controlMode.toLowerCase() == 'auto';
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: isAuto
-            ? AppColors.primary.withOpacity(0.18)
-            : AppColors.warning.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: isAuto
-              ? AppColors.primary.withOpacity(0.55)
-              : AppColors.warning.withOpacity(0.5),
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isAuto ? Icons.calendar_month_rounded : Icons.tune_rounded,
-            size: 11,
-            color: isAuto ? AppColors.primary : AppColors.warning,
-          ),
-          const SizedBox(width: 4),
-          Text(
-            isAuto ? 'AUTO' : 'MANUAL',
-            style: TextStyle(
-              color: isAuto ? AppColors.primary : AppColors.warning,
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.5,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // ── Metric cell ───────────────────────────────────────────────────────────────

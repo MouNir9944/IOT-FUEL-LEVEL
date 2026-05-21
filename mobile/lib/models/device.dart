@@ -1,16 +1,11 @@
 class Telemetry {
   final String deviceId;
-  final double fuelLevelPct;   // 0–100 %
-  final double fuelVolumeL;    // calculated volume in litres
-  final double? temperatureC;  // °C (optional)
-  final String pumpState;      // 'RUNNING' | 'STOPPED'
+  final double fuelLevelPct;      // 0–100 %
+  final double fuelVolumeL;       // calculated volume in litres
+  final double? temperatureC;     // °C (optional)
+  final int?    batteryMv;        // battery voltage in mV (optional)
+  final int?    rssi;             // WiFi/LoRa signal dBm (optional)
   final DateTime timestamp;
-  final String controlMode;
-  final bool? planActive;
-  final String? planId;
-  final String? planName;
-  final String? sliceStart;
-  final String? sliceStop;
   final double alertThresholdPct; // alert when fuel drops below this %
 
   const Telemetry({
@@ -18,66 +13,32 @@ class Telemetry {
     required this.fuelLevelPct,
     required this.fuelVolumeL,
     this.temperatureC,
-    this.pumpState = 'STOPPED',
+    this.batteryMv,
+    this.rssi,
     required this.timestamp,
-    this.controlMode = 'manual',
-    this.planActive,
-    this.planId,
-    this.planName,
-    this.sliceStart,
-    this.sliceStop,
     this.alertThresholdPct = 20.0,
   });
 
   factory Telemetry.fromJson(Map<String, dynamic> j) => Telemetry(
-        deviceId:           j['device_id']           as String? ?? '',
-        fuelLevelPct:       (j['fuel_level_pct']     as num?)?.toDouble() ?? 0.0,
-        fuelVolumeL:        (j['fuel_volume_l']       as num?)?.toDouble() ?? 0.0,
-        temperatureC:       (j['temperature_c']       as num?)?.toDouble(),
-        pumpState:          j['pump_state']           as String? ?? 'STOPPED',
+        deviceId:           j['device_id']            as String? ?? '',
+        fuelLevelPct:       (j['fuel_level_pct']      as num?)?.toDouble() ?? 0.0,
+        fuelVolumeL:        (j['fuel_volume_l']        as num?)?.toDouble() ?? 0.0,
+        temperatureC:       (j['temperature_c']        as num?)?.toDouble(),
+        batteryMv:          (j['battery_mv']           as num?)?.toInt(),
+        rssi:               (j['rssi']                 as num?)?.toInt(),
         timestamp:          DateTime.tryParse(j['timestamp'] as String? ?? '') ?? DateTime.now(),
-        controlMode:        j['control_mode']         as String? ?? 'manual',
-        planActive:         j['plan_active']          as bool?,
-        planId:             j['plan_id']              as String?,
-        planName:           j['plan_name']            as String?,
-        sliceStart:         j['slice_start']          as String?,
-        sliceStop:          j['slice_stop']           as String?,
-        alertThresholdPct:  (j['alert_threshold_pct'] as num?)?.toDouble() ?? 20.0,
+        alertThresholdPct:  (j['alert_threshold_pct']  as num?)?.toDouble() ?? 20.0,
       );
 
-  Telemetry copyWith({
-    double? fuelLevelPct,
-    double? fuelVolumeL,
-    double? temperatureC,
-    String? pumpState,
-    String? controlMode,
-    bool? planActive,
-    String? planId,
-    String? planName,
-    String? sliceStart,
-    String? sliceStop,
-    double? alertThresholdPct,
-  }) =>
-      Telemetry(
-        deviceId:          deviceId,
-        fuelLevelPct:      fuelLevelPct      ?? this.fuelLevelPct,
-        fuelVolumeL:       fuelVolumeL       ?? this.fuelVolumeL,
-        temperatureC:      temperatureC      ?? this.temperatureC,
-        pumpState:         pumpState         ?? this.pumpState,
-        timestamp:         timestamp,
-        controlMode:       controlMode       ?? this.controlMode,
-        planActive:        planActive        ?? this.planActive,
-        planId:            planId            ?? this.planId,
-        planName:          planName          ?? this.planName,
-        sliceStart:        sliceStart        ?? this.sliceStart,
-        sliceStop:         sliceStop         ?? this.sliceStop,
-        alertThresholdPct: alertThresholdPct ?? this.alertThresholdPct,
-      );
+  bool get isCritical => fuelLevelPct <= alertThresholdPct;
+  bool get isLow      => fuelLevelPct > alertThresholdPct &&
+                         fuelLevelPct <= alertThresholdPct * 1.5;
 
-  bool get isAuto      => controlMode.toLowerCase() == 'auto';
-  bool get isPumpOn    => pumpState == 'RUNNING';
-  bool get isCritical  => fuelLevelPct <= alertThresholdPct;
-  bool get isLow       => fuelLevelPct > alertThresholdPct && fuelLevelPct <= alertThresholdPct * 1.5;
+  /// Battery percentage (assumes 3 300 mV = 0 %, 4 200 mV = 100 %)
+  double? get batteryPct {
+    if (batteryMv == null) return null;
+    return ((batteryMv! - 3300) / 900 * 100).clamp(0.0, 100.0);
+  }
 }
 
 class Device {
@@ -93,7 +54,6 @@ class Device {
   Telemetry? lastTelemetry;
   DateTime? lastTelemetryAt;
   final bool alertOnOffline;
-  final String controlMode;
   final String? swVersion;
   final String? hwVersion;
 
@@ -110,47 +70,39 @@ class Device {
     this.lastTelemetry,
     this.lastTelemetryAt,
     this.alertOnOffline = true,
-    this.controlMode = 'manual',
     this.swVersion,
     this.hwVersion,
   });
 
   String get displayName => name ?? deviceId;
 
-  String get effectiveControlMode =>
-      lastTelemetry?.controlMode ?? controlMode;
-
   factory Device.fromJson(Map<String, dynamic> j) {
     Telemetry? tel;
     if (j['last_telemetry'] != null) {
       try {
-        tel = Telemetry.fromJson(Map<String, dynamic>.from(j['last_telemetry'] as Map));
+        tel = Telemetry.fromJson(
+            Map<String, dynamic>.from(j['last_telemetry'] as Map));
       } catch (_) {}
     }
     return Device(
       id:       j['id']?.toString() ?? '',
       deviceId: j['device_id'] as String,
-      name:     j['name'] as String?,
+      name:     j['name']      as String?,
       siteId:   j['site_id']?.toString() ?? '',
       siteName: j['site_name'] as String?,
       lastStatus:    j['last_status']    as String? ?? 'unknown',
       lastStatusAt:  j['last_status_at'] != null
-          ? DateTime.tryParse(j['last_status_at'] as String)
-          : null,
+          ? DateTime.tryParse(j['last_status_at'] as String) : null,
       lastLwtAt: j['last_lwt_at'] != null
-          ? DateTime.tryParse(j['last_lwt_at'] as String)
-          : null,
+          ? DateTime.tryParse(j['last_lwt_at'] as String) : null,
       lastLwtPayload: j['last_lwt_payload'] != null
-          ? Map<String, dynamic>.from(j['last_lwt_payload'] as Map)
-          : null,
+          ? Map<String, dynamic>.from(j['last_lwt_payload'] as Map) : null,
       lastTelemetry:   tel,
       lastTelemetryAt: j['last_telemetry_at'] != null
-          ? DateTime.tryParse(j['last_telemetry_at'] as String)
-          : null,
+          ? DateTime.tryParse(j['last_telemetry_at'] as String) : null,
       alertOnOffline: (j['alert_on_offline'] as bool?) ?? true,
-      controlMode:    j['control_mode']    as String? ?? 'manual',
-      swVersion:      j['sw_version']      as String?,
-      hwVersion:      j['hw_version']      as String?,
+      swVersion: j['sw_version'] as String?,
+      hwVersion: j['hw_version'] as String?,
     );
   }
 }
@@ -170,8 +122,9 @@ class ConnectionLog {
 
   factory ConnectionLog.fromJson(Map<String, dynamic> j) => ConnectionLog(
         id:        j['id']?.toString() ?? '',
-        status:    j['status'] as String,
-        reason:    j['reason'] as String?,
-        createdAt: DateTime.tryParse(j['created_at'] as String? ?? '') ?? DateTime.now(),
+        status:    j['status']    as String,
+        reason:    j['reason']    as String?,
+        createdAt: DateTime.tryParse(j['created_at'] as String? ?? '') ??
+            DateTime.now(),
       );
 }

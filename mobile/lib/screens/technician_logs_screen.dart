@@ -53,14 +53,15 @@ class _TechnicianLogsScreenState extends State<TechnicianLogsScreen>
       final d = Device.fromJson(
           Map<String, dynamic>.from(resp.data['device'] as Map));
       if (mounted && d.lastTelemetry != null) {
+        final tel = d.lastTelemetry!;
         setState(() {
           _config = {
-            'fuel_level_pct':      d.lastTelemetry!.fuelLevelPct,
-            'fuel_volume_l':       d.lastTelemetry!.fuelVolumeL,
-            'pump_state':          d.lastTelemetry!.pumpState,
-            'temperature_c':       d.lastTelemetry!.temperatureC,
-            'alert_threshold_pct': d.lastTelemetry!.alertThresholdPct,
-            'control_mode':        d.lastTelemetry!.controlMode,
+            'fuel_level_pct':      tel.fuelLevelPct,
+            'fuel_volume_l':       tel.fuelVolumeL,
+            'temperature_c':       tel.temperatureC,
+            'battery_mv':          tel.batteryMv,
+            'rssi':                tel.rssi,
+            'alert_threshold_pct': tel.alertThresholdPct,
           };
         });
       }
