@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { Plan, Device } from '../models/schemas';
 import { logger } from '../utils/logger';
 import { getMqttClient } from '../services/mqtt.service';
-import { PlanRule } from '../models/types';
 
 /* ── Validation schemas ──────────────────────────────────────────────────── */
 
@@ -28,7 +27,7 @@ const planSchema = z.object({
 
 /* ── Overlap helpers ─────────────────────────────────────────────────────── */
 
-type Slice = { start_time: string; stop_time: string };
+type Slice = { start_time: string; stop_time: string; target_liters?: number };
 type Rule  = { day_of_week: string; slices: Slice[] };
 
 /** True if two "HH:MM" ranges [a,b) and [c,d) overlap. */
@@ -126,7 +125,7 @@ export interface PlanForDevice {
   date_start:  string;
   date_stop?:  string | null;
   timezone:    string;
-  rules:       PlanRule[];
+  rules:       Rule[];
 }
 
 /** Build the MQTT set_plan payload for the water valve firmware. */
