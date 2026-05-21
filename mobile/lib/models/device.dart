@@ -20,15 +20,34 @@ class Telemetry {
   });
 
   factory Telemetry.fromJson(Map<String, dynamic> j) => Telemetry(
-        deviceId:           j['device_id']            as String? ?? '',
-        fuelLevelPct:       (j['fuel_level_pct']      as num?)?.toDouble() ?? 0.0,
-        fuelVolumeL:        (j['fuel_volume_l']        as num?)?.toDouble() ?? 0.0,
-        temperatureC:       (j['temperature_c']        as num?)?.toDouble(),
-        batteryMv:          (j['battery_mv']           as num?)?.toInt(),
-        rssi:               (j['rssi']                 as num?)?.toInt(),
-        timestamp:          DateTime.tryParse(j['timestamp'] as String? ?? '') ?? DateTime.now(),
-        alertThresholdPct:  (j['alert_threshold_pct']  as num?)?.toDouble() ?? 20.0,
+        deviceId:  j['device_id'] as String? ?? '',
+        // Accept both backend-normalised names and raw firmware field names
+        fuelLevelPct: ((j['fuel_level_pct'] ?? j['level_pct']) as num?)
+                ?.toDouble() ??
+            0.0,
+        fuelVolumeL: ((j['fuel_volume_l'] ?? j['volume_l']) as num?)
+                ?.toDouble() ??
+            0.0,
+        temperatureC:
+            ((j['temperature_c'] ?? j['temp_c']) as num?)?.toDouble(),
+        batteryMv:         (j['battery_mv']          as num?)?.toInt(),
+        rssi:              (j['rssi']                as num?)?.toInt(),
+        timestamp:         _parseTimestamp(j),
+        alertThresholdPct: (j['alert_threshold_pct'] as num?)?.toDouble() ?? 20.0,
       );
+
+  /// Handles both ISO-8601 string ("timestamp") and Unix-epoch int ("ts").
+  static DateTime _parseTimestamp(Map<String, dynamic> j) {
+    final iso = j['timestamp'];
+    if (iso is String && iso.isNotEmpty) {
+      return DateTime.tryParse(iso) ?? DateTime.now();
+    }
+    final epoch = j['ts'];
+    if (epoch is num) {
+      return DateTime.fromMillisecondsSinceEpoch((epoch * 1000).toInt());
+    }
+    return DateTime.now();
+  }
 
   bool get isCritical => fuelLevelPct <= alertThresholdPct;
   bool get isLow      => fuelLevelPct > alertThresholdPct &&
