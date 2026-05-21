@@ -9,6 +9,36 @@ import '../core/socket_service.dart';
 import '../models/device.dart';
 import '../widgets/status_badge.dart';
 
+// ── Shape metadata ────────────────────────────────────────────────────────────
+
+class _Shape {
+  final String id;   // firmware key
+  final String name;
+  final String desc;
+  const _Shape(this.id, this.name, this.desc);
+}
+
+const _kShapes = <_Shape>[
+  _Shape('rectangular',         'Rectangular',       'L × W × H'),
+  _Shape('cylinder_vertical',   'Vert. Cylinder',    'Upright · r × H'),
+  _Shape('cylinder_horizontal', 'Horiz. Cylinder',   'Lying · r × L'),
+  _Shape('cone_vertical',       'Vertical Cone',     '¹⁄₃ π r² H'),
+  _Shape('ellipse_vertical',    'Elliptic',          'Oval base'),
+  _Shape('sphere',              'Sphere',            '⁴⁄₃ π r³'),
+  _Shape('capsule',             'Capsule',           'Cyl. + 2 hemispheres'),
+  _Shape('multi_section',       'Multi-section',     'Sum of sections'),
+];
+
+// ── Reporting interval presets ─────────────────────────────────────────────────
+const _kIntervals = <int>[10, 30, 60, 300, 900, 3600];
+String _fmtInterval(int s) {
+  if (s < 60)   return '${s}s';
+  if (s < 3600) return '${s ~/ 60}m';
+  return '${s ~/ 3600}h';
+}
+
+// ── Main screen ───────────────────────────────────────────────────────────────
+
 class DeviceControlScreen extends StatefulWidget {
   final Device device;
   final bool isAdmin;
@@ -29,8 +59,8 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   Telemetry? _telemetry;
   String _status = 'unknown';
   late TabController _tabs;
-  late AnimationController _fillAnim;   // 0 → 1 on first load
-  late AnimationController _waveAnim;   // repeating wave
+  late AnimationController _fillAnim;
+  late AnimationController _waveAnim;
 
   // ── Config-sync state ──────────────────────────────────────────────────────
   bool _configLoading = false;
@@ -38,26 +68,19 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   DateTime? _configSyncedAt;
   Timer? _configTimeoutTimer;
 
-  /// Maps firmware shape strings → mobile app shape keys
-  static const _firmwareToShape = <String, String>{
-    'cylinder_vertical':   'cylindrical_vertical',
-    'cylinder_horizontal': 'cylindrical_horizontal',
-    'rectangular':         'rectangular',
-    'cone_vertical':       'cylindrical_vertical',   // best visual fallback
-    'ellipse_vertical':    'cylindrical_vertical',
-    'sphere':              'cylindrical_vertical',
-    'capsule':             'cylindrical_vertical',
-  };
-
-  // ── Tank config form state ─────────────────────────────────────────────────
-  String _shape = 'cylindrical_vertical';
-  final _heightCtrl    = TextEditingController(text: '200');
-  final _diameterCtrl  = TextEditingController(text: '100');
-  final _lengthCtrl    = TextEditingController(text: '150');
-  final _widthCtrl     = TextEditingController(text: '100');
-  final _offsetCtrl    = TextEditingController(text: '5');
+  // ── Tank config form state (firmware format: metres + firmware shape names) ─
+  String _shape = 'cylinder_vertical';
+  final _heightCtrl  = TextEditingController(text: '1.0');
+  final _radiusCtrl  = TextEditingController(text: '0.5');
+  final _radiusBCtrl = TextEditingController(text: '0.4'); // ellipse minor axis
+  final _lengthCtrl  = TextEditingController(text: '2.0');
+  final _widthCtrl   = TextEditingController(text: '1.5');
   final _thresholdCtrl = TextEditingController(text: '20');
-  bool _sending = false;
+  int  _reportingIntervalS = 30;
+  int  _timezoneOffsetMin  = 0;
+  bool _gpsEnabled = true;
+  bool _debugMode  = false;
+  bool _sending    = false;
 
   @override
   void initState() {
@@ -85,10 +108,10 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     _fillAnim.dispose();
     _waveAnim.dispose();
     _heightCtrl.dispose();
-    _diameterCtrl.dispose();
+    _radiusCtrl.dispose();
+    _radiusBCtrl.dispose();
     _lengthCtrl.dispose();
     _widthCtrl.dispose();
-    _offsetCtrl.dispose();
     _thresholdCtrl.dispose();
     _configTimeoutTimer?.cancel();
     SocketService.off('telemetry_update',     id: 'device_control');
@@ -109,9 +132,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       if (m['device_id'] != _device.deviceId) return;
       setState(() {
         _telemetry = Telemetry.fromJson(m);
-        _fillAnim
-          ..reset()
-          ..forward();
+        _fillAnim..reset()..forward();
       });
     }, id: 'device_control');
 
@@ -122,7 +143,6 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       setState(() => _status = m['status'] as String? ?? _status);
     }, id: 'device_control');
 
-    // Config report — device responds to "report_config" command
     SocketService.on('config_report', (data) {
       if (!mounted) return;
       final m = Map<String, dynamic>.from(data as Map);
@@ -137,8 +157,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   Future<void> _loadStatus() async {
     try {
-      final resp =
-          await ApiClient.instance.get('/devices/${_device.id}/status');
+      final resp = await ApiClient.instance.get('/devices/${_device.id}/status');
       if (!mounted) return;
       final d = Device.fromJson(
           Map<String, dynamic>.from(resp.data['device'] as Map));
@@ -146,56 +165,19 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         _device    = d;
         _status    = d.lastStatus;
         _telemetry = d.lastTelemetry;
-        _fillAnim
-          ..reset()
-          ..forward();
+        _fillAnim..reset()..forward();
+        // Pre-fill alert threshold from last known telemetry
+        if (d.lastTelemetry != null) {
+          _thresholdCtrl.text =
+              d.lastTelemetry!.alertThresholdPct.toStringAsFixed(0);
+        }
       });
       SocketService.subscribeToDevice(_device.deviceId);
     } catch (_) {}
   }
 
-  // ── Config send ───────────────────────────────────────────────────────────
-
-  Future<void> _sendConfig() async {
-    if (_sending) return;
-    final s = AppStrings.read(context);
-
-    final Map<String, dynamic> cfg = {
-      'shape':               _shape,
-      'sensor_offset_cm':    double.tryParse(_offsetCtrl.text.trim())    ?? 5.0,
-      'alert_threshold_pct': double.tryParse(_thresholdCtrl.text.trim()) ?? 20.0,
-    };
-
-    if (_shape == 'cylindrical_vertical' ||
-        _shape == 'cylindrical_horizontal') {
-      cfg['height_cm']   = double.tryParse(_heightCtrl.text.trim())   ?? 0;
-      cfg['diameter_cm'] = double.tryParse(_diameterCtrl.text.trim()) ?? 0;
-    } else {
-      cfg['height_cm'] = double.tryParse(_heightCtrl.text.trim())  ?? 0;
-      cfg['length_cm'] = double.tryParse(_lengthCtrl.text.trim())  ?? 0;
-      cfg['width_cm']  = double.tryParse(_widthCtrl.text.trim())   ?? 0;
-    }
-
-    setState(() => _sending = true);
-    try {
-      await ApiClient.instance.post(
-        '/devices/${_device.id}/command',
-        data: {'cmd': 'set_config', 'value': cfg},
-      );
-      if (!mounted) return;
-      _snack(s.configSent);
-    } on DioException catch (e) {
-      if (!mounted) return;
-      _snack(ApiClient.errorMessage(e), isError: true);
-    } finally {
-      if (mounted) setState(() => _sending = false);
-    }
-  }
-
   // ── Config sync ───────────────────────────────────────────────────────────
 
-  /// Called whenever the tab index changes.  Triggers a config fetch the first
-  /// time the user opens the "Tank Config" tab.
   void _onTabChanged() {
     if (!_tabs.indexIsChanging &&
         _tabs.index == 1 &&
@@ -205,23 +187,14 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     }
   }
 
-  /// Sends a `report_config` command to the backend.
-  /// The device will reply on `device/{MAC}/config_report`, which the backend
-  /// forwards as a `config_report` socket event.
   Future<void> _requestDeviceConfig() async {
     if (_configLoading) return;
-    setState(() {
-      _configLoading = true;
-      _configLoaded  = false;
-    });
+    setState(() { _configLoading = true; _configLoaded = false; });
     try {
       await ApiClient.instance.post(
         '/devices/${_device.id}/command',
         data: {'cmd': 'report_config'},
       );
-      // The actual result arrives asynchronously via the socket listener.
-      // Start a 10 s watchdog so the spinner doesn't spin forever if the
-      // device is offline or slow to respond.
       _configTimeoutTimer?.cancel();
       _configTimeoutTimer = Timer(const Duration(seconds: 10), () {
         if (mounted && _configLoading) setState(() => _configLoading = false);
@@ -231,32 +204,32 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     }
   }
 
-  /// Translates the firmware-format config map (metres, firmware shape names)
-  /// into the form fields (centimetres, display shape names).
+  /// Populates the form directly from the firmware-format config map.
+  /// No unit conversion needed — device uses metres, form uses metres.
   void _applyConfigReport(Map<String, dynamic> config) {
     _configTimeoutTimer?.cancel();
 
-    // ── Shape ──────────────────────────────────────────────────────────────
-    final firmwareShape = config['tank_shape'] as String?;
-    if (firmwareShape != null) {
-      final appShape = _firmwareToShape[firmwareShape];
-      if (appShape != null) _shape = appShape;
+    final shape = config['tank_shape'] as String?;
+    if (shape != null) _shape = shape;
+
+    final p = config['tank_shape_params'];
+    if (p is Map) {
+      _setCtrl(_heightCtrl,  (p['height_m']   as num?)?.toDouble());
+      _setCtrl(_radiusCtrl,  (p['radius_m']   as num?)?.toDouble());
+      _setCtrl(_radiusBCtrl, (p['radius_b_m'] as num?)?.toDouble());
+      _setCtrl(_lengthCtrl,  (p['length_m']   as num?)?.toDouble());
+      _setCtrl(_widthCtrl,   (p['width_m']    as num?)?.toDouble());
     }
 
-    // ── Dimensions: metres → centimetres, radius → diameter ───────────────
-    final raw = config['tank_shape_params'];
-    if (raw is Map) {
-      final hm = (raw['height_m'] as num?)?.toDouble();
-      final rm = (raw['radius_m'] as num?)?.toDouble();
-      final lm = (raw['length_m'] as num?)?.toDouble();
-      final wm = (raw['width_m']  as num?)?.toDouble();
-      if (hm != null) _heightCtrl.text   = _fmtCm(hm * 100);
-      if (rm != null) _diameterCtrl.text = _fmtCm(rm * 200); // radius→diameter
-      if (lm != null) _lengthCtrl.text   = _fmtCm(lm * 100);
-      if (wm != null) _widthCtrl.text    = _fmtCm(wm * 100);
-    }
+    final interval = (config['reporting_interval_s'] as num?)?.toInt();
+    if (interval != null) _reportingIntervalS = interval;
+    final tz = (config['timezone_offset_min'] as num?)?.toInt();
+    if (tz != null) _timezoneOffsetMin = tz;
+    final gps = config['gps_enabled'] as bool?;
+    if (gps != null) _gpsEnabled = gps;
+    final dbg = config['debug_mode'] as bool?;
+    if (dbg != null) _debugMode = dbg;
 
-    // ── Alert threshold (stored app-side in DB, appended by backend) ───────
     final alertPct = (config['alert_threshold_pct'] as num?)?.toDouble();
     if (alertPct != null) _thresholdCtrl.text = alertPct.toStringAsFixed(0);
 
@@ -267,9 +240,87 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     });
   }
 
-  /// Format a centimetre value: whole number if no fraction, else 1 decimal.
-  String _fmtCm(double cm) =>
-      cm == cm.roundToDouble() ? cm.toStringAsFixed(0) : cm.toStringAsFixed(1);
+  void _setCtrl(TextEditingController ctrl, double? val) {
+    if (val == null) return;
+    ctrl.text = (val == val.roundToDouble())
+        ? val.toStringAsFixed(1)
+        : val.toStringAsFixed(4).replaceAll(RegExp(r'0+$'), '');
+  }
+
+  // ── Config send ───────────────────────────────────────────────────────────
+
+  Future<void> _sendConfig() async {
+    if (_sending) return;
+    final s = AppStrings.read(context);
+
+    // Build tank_shape_params in metres (native firmware format)
+    final params = <String, double>{};
+    final h  = double.tryParse(_heightCtrl.text.trim());
+    final r  = double.tryParse(_radiusCtrl.text.trim());
+    final rB = double.tryParse(_radiusBCtrl.text.trim());
+    final l  = double.tryParse(_lengthCtrl.text.trim());
+    final w  = double.tryParse(_widthCtrl.text.trim());
+
+    switch (_shape) {
+      case 'rectangular':
+        if (l != null) params['length_m'] = l;
+        if (w != null) params['width_m']  = w;
+        if (h != null) params['height_m'] = h;
+      case 'cylinder_vertical':
+      case 'cone_vertical':
+        if (r != null) params['radius_m'] = r;
+        if (h != null) params['height_m'] = h;
+      case 'cylinder_horizontal':
+      case 'capsule':
+        if (r != null) params['radius_m'] = r;
+        if (l != null) params['length_m'] = l;
+      case 'ellipse_vertical':
+        if (r  != null) params['radius_m']   = r;
+        if (rB != null) params['radius_b_m'] = rB;
+        if (h  != null) params['height_m']   = h;
+      case 'sphere':
+        if (r != null) params['radius_m'] = r;
+      // multi_section: no dimension fields — send shape name only
+    }
+
+    final firmwareCfg = <String, dynamic>{
+      'tank_shape': _shape,
+      if (params.isNotEmpty) 'tank_shape_params': params,
+      'reporting_interval_s': _reportingIntervalS,
+      'timezone_offset_min':  _timezoneOffsetMin,
+      'gps_enabled': _gpsEnabled,
+      'debug_mode':  _debugMode,
+    };
+
+    final alertPct = double.tryParse(_thresholdCtrl.text.trim());
+
+    setState(() => _sending = true);
+    try {
+      // 1. Send firmware config (update_config = native device format)
+      await ApiClient.instance.post(
+        '/devices/${_device.id}/command',
+        data: {'cmd': 'update_config', 'config': firmwareCfg},
+      );
+
+      // 2. Update alert_threshold_pct in DB (app-side only, not in firmware)
+      if (alertPct != null) {
+        await ApiClient.instance.post(
+          '/devices/${_device.id}/command',
+          data: {'cmd': 'set_config', 'value': {'alert_threshold_pct': alertPct}},
+        );
+      }
+
+      if (!mounted) return;
+      _snack(s.configSent);
+      // Device is saving to NVS; clear loaded flag so next tab visit re-syncs
+      setState(() { _configLoaded = false; });
+    } on DioException catch (e) {
+      if (!mounted) return;
+      _snack(ApiClient.errorMessage(e), isError: true);
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
 
   void _snack(String msg, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -280,12 +331,33 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     ));
   }
 
+  // ── Capacity calculator ───────────────────────────────────────────────────
+
+  double _calcCapacityL() {
+    final h  = double.tryParse(_heightCtrl.text)  ?? 0;
+    final r  = double.tryParse(_radiusCtrl.text)  ?? 0;
+    final rB = double.tryParse(_radiusBCtrl.text) ?? 0;
+    final l  = double.tryParse(_lengthCtrl.text)  ?? 0;
+    final w  = double.tryParse(_widthCtrl.text)   ?? 0;
+    const pi = math.pi;
+    switch (_shape) {
+      case 'rectangular':         return l * w * h * 1000;
+      case 'cylinder_vertical':   return pi * r * r * h * 1000;
+      case 'cylinder_horizontal': return pi * r * r * l * 1000;
+      case 'cone_vertical':       return (1 / 3) * pi * r * r * h * 1000;
+      case 'ellipse_vertical':    return pi * r * rB * h * 1000;
+      case 'sphere':              return (4 / 3) * pi * r * r * r * 1000;
+      case 'capsule':
+        return (pi * r * r * l + (4 / 3) * pi * r * r * r) * 1000;
+      default:                    return 0;
+    }
+  }
+
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final s = AppStrings.of(context);
-
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -322,10 +394,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       ),
       body: TabBarView(
         controller: _tabs,
-        children: [
-          _monitorTab(s),
-          _configTab(s),
-        ],
+        children: [_monitorTab(s), _configTab(s)],
       ),
     );
   }
@@ -343,66 +412,53 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
         children: [
-          // ── Tank visualisation card ──────────────────────────────────────
+          // Tank visualisation card
           _Card(
             child: Column(
               children: [
-                // Shape chip
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 5),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                   decoration: BoxDecoration(
                     color: AppColors.surfaceLight,
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.local_gas_station_rounded,
-                          color: AppColors.textMuted, size: 13),
-                      const SizedBox(width: 6),
-                      Text(
-                        _shapeLabel(_shape, s),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.local_gas_station_rounded,
+                        color: AppColors.textMuted, size: 13),
+                    const SizedBox(width: 6),
+                    Text(_shapeName(_shape),
                         style: const TextStyle(
-                            color: AppColors.textMuted, fontSize: 12),
-                      ),
-                    ],
-                  ),
+                            color: AppColors.textMuted, fontSize: 12)),
+                  ]),
                 ),
                 const SizedBox(height: 20),
-
-                // Animated tank
                 AnimatedBuilder(
                   animation: Listenable.merge([_fillAnim, _waveAnim]),
                   builder: (_, __) {
                     final fillRatio =
                         (pct / 100.0) * _fillAnim.value.clamp(0.0, 1.0);
-                    final wavePhase = _waveAnim.value * 2 * math.pi;
                     return _TankWidget(
                       pct: pct,
                       volumeL: t?.fuelVolumeL,
                       fillRatio: fillRatio,
-                      wavePhase: wavePhase,
+                      wavePhase: _waveAnim.value * 2 * math.pi,
                       color: color,
                       shape: _shape,
                     );
                   },
                 ),
-
                 const SizedBox(height: 14),
                 if (t != null)
-                  Text(
-                    '${s.lastSeen}: ${_timeAgo(t.timestamp)}',
-                    style: const TextStyle(
-                        color: AppColors.textMuted, fontSize: 11),
-                  ),
+                  Text('${s.lastSeen}: ${_timeAgo(t.timestamp)}',
+                      style: const TextStyle(
+                          color: AppColors.textMuted, fontSize: 11)),
               ],
             ),
           ),
 
           const SizedBox(height: 12),
 
-          // ── Metrics grid ─────────────────────────────────────────────────
+          // Metrics grid
           GridView.count(
             crossAxisCount: 2,
             shrinkWrap: true,
@@ -413,100 +469,86 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
             children: [
               _MetricTile(
                 label: s.fuelVolume,
-                value: t != null
-                    ? '${t.fuelVolumeL.toStringAsFixed(1)} L'
-                    : '—',
+                value: t != null ? '${t.fuelVolumeL.toStringAsFixed(1)} L' : '—',
                 icon: Icons.opacity_rounded,
                 color: AppColors.info,
               ),
               _MetricTile(
                 label: s.temperature,
                 value: t?.temperatureC != null
-                    ? '${t!.temperatureC!.toStringAsFixed(1)} °C'
-                    : '—',
+                    ? '${t!.temperatureC!.toStringAsFixed(1)} °C' : '—',
                 icon: Icons.thermostat_rounded,
                 color: (t?.temperatureC ?? 0) > 50
-                    ? AppColors.error
-                    : AppColors.warning,
+                    ? AppColors.error : AppColors.warning,
               ),
               _MetricTile(
                 label: s.batteryLevel,
                 value: t?.batteryPct != null
-                    ? '${t!.batteryPct!.toStringAsFixed(0)} %'
-                    : '—',
+                    ? '${t!.batteryPct!.toStringAsFixed(0)} %' : '—',
                 icon: Icons.battery_charging_full_rounded,
                 color: (t?.batteryPct ?? 100) < 20
-                    ? AppColors.error
-                    : AppColors.success,
+                    ? AppColors.error : AppColors.success,
               ),
               _MetricTile(
                 label: s.signalStrength,
                 value: t?.rssi != null ? '${t!.rssi} dBm' : '—',
                 icon: Icons.signal_wifi_4_bar_rounded,
                 color: (t?.rssi ?? 0) < -80
-                    ? AppColors.error
-                    : AppColors.success,
+                    ? AppColors.error : AppColors.success,
               ),
             ],
           ),
 
           const SizedBox(height: 12),
 
-          // ── Alert status card ─────────────────────────────────────────────
+          // Alert card
           if (t != null)
             _Card(
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: t.isCritical
-                          ? AppColors.fuelLow.withOpacity(0.15)
-                          : AppColors.success.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(
-                      t.isCritical
-                          ? Icons.warning_amber_rounded
-                          : Icons.check_circle_outline_rounded,
-                      color: t.isCritical
-                          ? AppColors.fuelLow
-                          : AppColors.success,
-                      size: 20,
-                    ),
+              child: Row(children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: t.isCritical
+                        ? AppColors.fuelLow.withOpacity(0.15)
+                        : AppColors.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          t.isCritical
-                              ? 'LOW FUEL — below ${t.alertThresholdPct.toStringAsFixed(0)}%'
-                              : t.isLow
-                                  ? 'LOW FUEL — consider refilling soon'
-                                  : 'Fuel level OK',
-                          style: TextStyle(
-                            color: t.isCritical
-                                ? AppColors.fuelLow
-                                : t.isLow
-                                    ? AppColors.fuelMid
-                                    : AppColors.success,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                          ),
-                        ),
-                        Text(
-                          '${s.alertThreshold}: '
-                          '${t.alertThresholdPct.toStringAsFixed(0)}%',
-                          style: const TextStyle(
-                              color: AppColors.textMuted, fontSize: 11),
-                        ),
-                      ],
-                    ),
+                  child: Icon(
+                    t.isCritical
+                        ? Icons.warning_amber_rounded
+                        : Icons.check_circle_outline_rounded,
+                    color: t.isCritical ? AppColors.fuelLow : AppColors.success,
+                    size: 20,
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        t.isCritical
+                            ? 'LOW FUEL — below ${t.alertThresholdPct.toStringAsFixed(0)}%'
+                            : t.isLow
+                                ? 'LOW FUEL — consider refilling soon'
+                                : 'Fuel level OK',
+                        style: TextStyle(
+                          color: t.isCritical
+                              ? AppColors.fuelLow
+                              : t.isLow ? AppColors.fuelMid : AppColors.success,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                      Text(
+                        '${s.alertThreshold}: ${t.alertThresholdPct.toStringAsFixed(0)}%',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ]),
             ),
         ],
       ),
@@ -515,222 +557,446 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   // ── Tab 2 — Tank configuration ────────────────────────────────────────────
 
-  Widget _configTab(AppStrings s) => SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── Sync status bar ────────────────────────────────────────────
-            _ConfigSyncBar(
-              loading:   _configLoading,
-              loaded:    _configLoaded,
-              syncedAt:  _configSyncedAt,
-              onRefresh: _configLoading ? null : () {
-                setState(() { _configLoaded = false; });
-                _requestDeviceConfig();
-              },
-            ),
-            const SizedBox(height: 12),
+  Widget _configTab(AppStrings s) {
+    final capL = _calcCapacityL();
 
-            // Hint banner
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(10),
-                border:
-                    Border.all(color: AppColors.primary.withOpacity(0.25)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline_rounded,
-                      color: AppColors.primary, size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      s.tankConfigHint,
-                      style: const TextStyle(
-                          color: AppColors.textMuted, fontSize: 12),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Sync status
+          _ConfigSyncBar(
+            loading:   _configLoading,
+            loaded:    _configLoaded,
+            syncedAt:  _configSyncedAt,
+            onRefresh: _configLoading ? null : () {
+              setState(() { _configLoaded = false; });
+              _requestDeviceConfig();
+            },
+          ),
+          const SizedBox(height: 14),
+
+          // ── Card 1: Tank Geometry ──────────────────────────────────────
+          _ConfigCard(
+            icon: Icons.propane_tank_outlined,
+            title: 'Tank Geometry',
+            subtitle: 'Used by device to convert sensor distance → volume',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Shape grid
+                const _SectionLabel('Tank Shape'),
+                _TankShapeGrid(
+                  selected: _shape,
+                  onChanged: (v) => setState(() => _shape = v),
+                ),
+                const SizedBox(height: 20),
+
+                // Dimensions
+                const _SectionLabel('Dimensions'),
+                _buildDimensionFields(),
+                const SizedBox(height: 16),
+
+                // Calculated capacity
+                if (_shape != 'multi_section' && capL > 0)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.07),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: AppColors.primary.withOpacity(0.20)),
                     ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // Shape selector
-            _SectionLabel(s.tankShape),
-            _ShapeSelector(
-              selected: _shape,
-              onChanged: (v) => setState(() => _shape = v),
-              labels: {
-                'cylindrical_vertical':   s.cylindricalVertical,
-                'cylindrical_horizontal': s.cylindricalHorizontal,
-                'rectangular':            s.rectangular,
-              },
-            ),
-
-            const SizedBox(height: 20),
-
-            // Dimensions
-            _SectionLabel('Dimensions'),
-            _numField(
-                label: s.heightCm,
-                ctrl: _heightCtrl,
-                icon: Icons.height_rounded),
-            const SizedBox(height: 12),
-
-            if (_shape != 'rectangular') ...[
-              _numField(
-                  label: s.diameterCm,
-                  ctrl: _diameterCtrl,
-                  icon: Icons.circle_outlined),
-            ] else ...[
-              _numField(
-                  label: s.lengthCm,
-                  ctrl: _lengthCtrl,
-                  icon: Icons.straighten_rounded),
-              const SizedBox(height: 12),
-              _numField(
-                  label: s.widthCm,
-                  ctrl: _widthCtrl,
-                  icon: Icons.straighten_rounded),
-            ],
-
-            const SizedBox(height: 20),
-
-            // Sensor settings
-            _SectionLabel('Sensor Settings'),
-            _numField(
-                label: s.sensorOffsetCm,
-                ctrl: _offsetCtrl,
-                icon: Icons.vertical_align_bottom_rounded),
-            const SizedBox(height: 12),
-            _numField(
-                label: s.alertThresholdPct,
-                ctrl: _thresholdCtrl,
-                icon: Icons.notifications_active_rounded,
-                color: AppColors.fuelLow),
-
-            const SizedBox(height: 28),
-
-            // Send button
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: _sending
-                      ? null
-                      : const LinearGradient(
-                          colors: [AppColors.primary, Color(0xFFD97706)],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
+                    child: Row(children: [
+                      const Icon(Icons.calculate_outlined,
+                          color: AppColors.primary, size: 18),
+                      const SizedBox(width: 10),
+                      const Text('Calculated capacity',
+                          style: TextStyle(
+                              color: AppColors.textMuted, fontSize: 13)),
+                      const Spacer(),
+                      Text(
+                        '${capL.toStringAsFixed(0)} L',
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
                         ),
-                  color: _sending ? AppColors.surfaceLight : null,
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: _sending
-                      ? null
-                      : [
-                          BoxShadow(
-                            color: AppColors.primary.withOpacity(0.35),
-                            blurRadius: 16,
-                            offset: const Offset(0, 6),
-                          ),
-                        ],
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '(${(capL / 1000).toStringAsFixed(2)} m³)',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 11),
+                      ),
+                    ]),
+                  ),
+
+                if (_shape == 'multi_section')
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceLight,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Row(children: [
+                      Icon(Icons.info_outline_rounded,
+                          color: AppColors.textMuted, size: 16),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Multi-section tanks require configuration via the web dashboard.',
+                          style: TextStyle(
+                              color: AppColors.textMuted, fontSize: 12),
+                        ),
+                      ),
+                    ]),
+                  ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // ── Card 2: Reporting & Features ───────────────────────────────
+          _ConfigCard(
+            icon: Icons.schedule_rounded,
+            title: 'Reporting & Features',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Interval
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Reporting Interval',
+                        style: TextStyle(
+                            color: AppColors.text,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _fmtInterval(_reportingIntervalS),
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                child: ElevatedButton.icon(
-                  onPressed: _sending ? null : _sendConfig,
-                  icon: _sending
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              color: Colors.white, strokeWidth: 2.5))
-                      : const Icon(Icons.send_rounded,
-                          color: Colors.white, size: 18),
-                  label: Text(
-                    _sending ? s.loading : s.sendConfig,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700),
+                const SizedBox(height: 4),
+                const Text(
+                  'How often the device sends telemetry (10 s – 1 hr)',
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+                ),
+                const SizedBox(height: 10),
+
+                // Quick-select chips
+                Wrap(
+                  spacing: 8,
+                  children: _kIntervals.map((v) {
+                    final sel = _reportingIntervalS == v;
+                    return GestureDetector(
+                      onTap: () => setState(() => _reportingIntervalS = v),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: sel
+                              ? AppColors.primary
+                              : AppColors.surfaceLight,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                              color: sel
+                                  ? AppColors.primary
+                                  : AppColors.border),
+                        ),
+                        child: Text(
+                          _fmtInterval(v),
+                          style: TextStyle(
+                            color: sel ? Colors.white : AppColors.textMuted,
+                            fontSize: 12,
+                            fontWeight: sel
+                                ? FontWeight.w700
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+
+                const SizedBox(height: 20),
+
+                // Timezone
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Timezone',
+                            style: TextStyle(
+                                color: AppColors.text,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600)),
+                        Text(
+                          'Offset for device timestamps',
+                          style: TextStyle(
+                              color: AppColors.textMuted, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      _fmtTz(_timezoneOffsetMin),
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    activeTrackColor: AppColors.primary,
+                    inactiveTrackColor: AppColors.border,
+                    thumbColor: AppColors.primary,
+                    overlayColor: AppColors.primary.withOpacity(0.15),
+                    trackHeight: 3,
                   ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    shadowColor: Colors.transparent,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
+                  child: Slider(
+                    min: -720,
+                    max: 720,
+                    divisions: 48, // 30-min steps
+                    value: _timezoneOffsetMin.clamp(-720, 720).toDouble(),
+                    onChanged: (v) =>
+                        setState(() => _timezoneOffsetMin = v.toInt()),
                   ),
+                ),
+
+                const SizedBox(height: 8),
+
+                // GPS toggle
+                _ToggleRow(
+                  icon: Icons.gps_fixed_rounded,
+                  iconColor: AppColors.success,
+                  title: 'GPS Location',
+                  subtitle: 'Include GPS in telemetry',
+                  value: _gpsEnabled,
+                  onChanged: (v) => setState(() => _gpsEnabled = v),
+                ),
+
+                const SizedBox(height: 8),
+
+                // Debug toggle
+                _ToggleRow(
+                  icon: Icons.bug_report_outlined,
+                  iconColor: AppColors.warning,
+                  title: 'Debug Mode',
+                  subtitle: 'Verbose device logging',
+                  value: _debugMode,
+                  onChanged: (v) => setState(() => _debugMode = v),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // ── Card 3: Alert Settings ─────────────────────────────────────
+          _ConfigCard(
+            icon: Icons.notifications_active_rounded,
+            title: 'Alert Settings',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Alert Threshold (%)',
+                  style: TextStyle(
+                      color: AppColors.textMuted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _thresholdCtrl,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(
+                      color: AppColors.text, fontSize: 15),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(
+                        Icons.warning_amber_rounded,
+                        color: AppColors.fuelLow,
+                        size: 20),
+                    suffixText: '%',
+                    suffixStyle: const TextStyle(
+                        color: AppColors.textMuted),
+                    hintText: '20',
+                    hintStyle:
+                        const TextStyle(color: AppColors.textMuted),
+                    filled: true,
+                    fillColor: AppColors.surfaceLight,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                        vertical: 14, horizontal: 14),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide:
+                            const BorderSide(color: AppColors.border)),
+                    enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide:
+                            const BorderSide(color: AppColors.border)),
+                    focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(
+                            color: AppColors.fuelLow, width: 2)),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'App shows a warning when fuel drops below this level.',
+                  style: TextStyle(
+                      color: AppColors.textMuted, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 28),
+
+          // ── Send button ────────────────────────────────────────────────
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: _sending
+                    ? null
+                    : const LinearGradient(
+                        colors: [AppColors.primary, Color(0xFFD97706)],
+                        begin: Alignment.centerLeft,
+                        end: Alignment.centerRight,
+                      ),
+                color: _sending ? AppColors.surfaceLight : null,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: _sending
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: AppColors.primary.withOpacity(0.35),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+              ),
+              child: ElevatedButton.icon(
+                onPressed: _sending ? null : _sendConfig,
+                icon: _sending
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2.5))
+                    : const Icon(Icons.send_rounded,
+                        color: Colors.white, size: 18),
+                label: Text(
+                  _sending ? 'Sending…' : 'Send Config to Device',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                  shadowColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
                 ),
               ),
             ),
+          ),
 
-            const SizedBox(height: 32),
-          ],
-        ),
-      );
+          const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Dimension fields builder (changes per shape) ──────────────────────────
 
-  String _shapeLabel(String shape, AppStrings s) {
-    switch (shape) {
-      case 'cylindrical_horizontal': return s.cylindricalHorizontal;
-      case 'rectangular':            return s.rectangular;
-      default:                       return s.cylindricalVertical;
+  Widget _buildDimensionFields() {
+    switch (_shape) {
+      case 'rectangular':
+        return Column(children: [
+          _DimField(label: 'Length',   ctrl: _lengthCtrl),
+          const SizedBox(height: 10),
+          _DimField(label: 'Width',    ctrl: _widthCtrl),
+          const SizedBox(height: 10),
+          _DimField(label: 'Height',   ctrl: _heightCtrl),
+        ]);
+      case 'cylinder_vertical':
+      case 'cone_vertical':
+        return Column(children: [
+          _DimField(label: 'Radius',  ctrl: _radiusCtrl),
+          const SizedBox(height: 10),
+          _DimField(label: 'Height',  ctrl: _heightCtrl),
+        ]);
+      case 'cylinder_horizontal':
+      case 'capsule':
+        return Column(children: [
+          _DimField(label: 'Radius',        ctrl: _radiusCtrl),
+          const SizedBox(height: 10),
+          _DimField(label: 'Length (tube)', ctrl: _lengthCtrl),
+        ]);
+      case 'ellipse_vertical':
+        return Column(children: [
+          _DimField(label: 'Radius A (equatorial)', ctrl: _radiusCtrl),
+          const SizedBox(height: 10),
+          _DimField(label: 'Radius B (polar)',      ctrl: _radiusBCtrl),
+          const SizedBox(height: 10),
+          _DimField(label: 'Height',                ctrl: _heightCtrl),
+        ]);
+      case 'sphere':
+        return _DimField(label: 'Radius', ctrl: _radiusCtrl);
+      default: // multi_section
+        return const SizedBox.shrink();
     }
   }
 
-  Widget _numField({
-    required String label,
-    required TextEditingController ctrl,
-    required IconData icon,
-    Color? color,
-  }) =>
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label,
-              style: const TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600)),
-          const SizedBox(height: 6),
-          TextField(
-            controller: ctrl,
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
-            style: const TextStyle(color: AppColors.text, fontSize: 15),
-            decoration: InputDecoration(
-              prefixIcon:
-                  Icon(icon, color: color ?? AppColors.textMuted, size: 20),
-              filled: true,
-              fillColor: AppColors.surface,
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(
-                  vertical: 14, horizontal: 14),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide:
-                      const BorderSide(color: AppColors.border)),
-              enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide:
-                      const BorderSide(color: AppColors.border)),
-              focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(
-                      color: color ?? AppColors.primary, width: 2)),
-            ),
-          ),
-        ],
-      );
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  String _shapeName(String firmware) {
+    for (final s in _kShapes) {
+      if (s.id == firmware) return s.name;
+    }
+    return firmware;
+  }
+
+  static String _fmtTz(int offsetMin) {
+    final h = offsetMin ~/ 60;
+    final m = (offsetMin.abs()) % 60;
+    final sign = h >= 0 ? '+' : '';
+    return m == 0 ? 'UTC$sign$h' : 'UTC$sign$h:${m.toString().padLeft(2, '0')}';
+  }
 
   String _timeAgo(DateTime dt) {
     final diff = DateTime.now().difference(dt);
-    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inSeconds < 60)  return '${diff.inSeconds}s ago';
+    if (diff.inMinutes < 60)  return '${diff.inMinutes}m ago';
     return '${diff.inHours}h ago';
   }
 }
@@ -756,87 +1022,60 @@ class _TankWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool isHorizontal = shape == 'cylindrical_horizontal';
-
-    // Tank canvas dimensions
+    final isHorizontal = shape == 'cylinder_horizontal';
     final double tankW = isHorizontal ? 300 : 160;
     final double tankH = isHorizontal ? 150 : 280;
-
-    final String statusLabel =
-        pct > 60 ? 'NORMAL' : pct > 20 ? 'LOW' : 'CRITICAL';
+    final statusLabel = pct > 60 ? 'NORMAL' : pct > 20 ? 'LOW' : 'CRITICAL';
 
     return Center(
       child: SizedBox(
         width: tankW,
         height: tankH,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Tank drawing
-            CustomPaint(
-              painter: _TankPainter(
-                fillRatio: fillRatio,
-                wavePhase: wavePhase,
-                color: color,
-                shape: shape,
-              ),
-              child: SizedBox(width: tankW, height: tankH),
+        child: Stack(alignment: Alignment.center, children: [
+          CustomPaint(
+            painter: _TankPainter(
+              fillRatio: fillRatio,
+              wavePhase: wavePhase,
+              color: color,
+              shape: shape,
             ),
-
-            // Overlay text
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '${pct.toStringAsFixed(1)}%',
+            child: SizedBox(width: tankW, height: tankH),
+          ),
+          Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              '${pct.toStringAsFixed(1)}%',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: isHorizontal ? 30 : 38,
+                fontWeight: FontWeight.w900,
+                shadows: [Shadow(color: Colors.black.withOpacity(0.6), blurRadius: 10)],
+              ),
+            ),
+            if (volumeL != null)
+              Text('${volumeL!.toStringAsFixed(1)} L',
                   style: TextStyle(
-                    color: Colors.white,
-                    fontSize: isHorizontal ? 30 : 38,
-                    fontWeight: FontWeight.w900,
-                    shadows: [
-                      Shadow(
-                          color: Colors.black.withOpacity(0.6),
-                          blurRadius: 10),
-                    ],
-                  ),
-                ),
-                if (volumeL != null)
-                  Text(
-                    '${volumeL!.toStringAsFixed(1)} L',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.9),
-                      fontSize: isHorizontal ? 13 : 15,
-                      fontWeight: FontWeight.w600,
-                      shadows: [
-                        Shadow(
-                            color: Colors.black.withOpacity(0.5),
-                            blurRadius: 8),
-                      ],
-                    ),
-                  ),
-                const SizedBox(height: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.35),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: color.withOpacity(0.6)),
-                  ),
-                  child: Text(
-                    statusLabel,
-                    style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: isHorizontal ? 13 : 15,
+                    fontWeight: FontWeight.w600,
+                    shadows: [Shadow(color: Colors.black.withOpacity(0.5), blurRadius: 8)],
+                  )),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.35),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: color.withOpacity(0.6)),
+              ),
+              child: Text(statusLabel,
+                  style: TextStyle(
                       color: color,
                       fontSize: 10,
                       fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                ),
-              ],
+                      letterSpacing: 0.8)),
             ),
-          ],
-        ),
+          ]),
+        ]),
       ),
     );
   }
@@ -845,10 +1084,10 @@ class _TankWidget extends StatelessWidget {
 // ── Tank painter ──────────────────────────────────────────────────────────────
 
 class _TankPainter extends CustomPainter {
-  final double fillRatio;  // 0.0 – 1.0 (pre-animated)
-  final double wavePhase;  // 0 – 2π  (from repeating controller)
+  final double fillRatio;
+  final double wavePhase;
   final Color color;
-  final String shape;
+  final String shape; // firmware shape name
 
   const _TankPainter({
     required this.fillRatio,
@@ -863,65 +1102,48 @@ class _TankPainter extends CustomPainter {
     final h = size.height;
     final tank = _tankPath(w, h);
 
-    // 1 ── Empty tank background
-    canvas.drawPath(tank, Paint()
-      ..color = color.withOpacity(0.08)
-      ..style = PaintingStyle.fill);
+    // 1 ── Empty background
+    canvas.drawPath(tank,
+        Paint()..color = color.withOpacity(0.08)..style = PaintingStyle.fill);
 
-    // 2 ── Level marker lines (25 / 50 / 75 %)
+    // 2 ── Level markers
     _drawMarkers(canvas, w, h, tank);
 
-    // 3 ── Fuel fill with animated wave surface
+    // 3 ── Animated fuel fill
     if (fillRatio > 0.002) {
-      final fuelTop = h * (1.0 - fillRatio.clamp(0.0, 1.0));
-      const waveAmp = 5.0;
-      const cycles  = 2.0;
+      final fuelTop  = h * (1.0 - fillRatio.clamp(0.0, 1.0));
+      const waveAmp  = 5.0;
+      const cycles   = 2.0;
 
-      // Build wave-top fill path
       final fuel = Path()
         ..moveTo(-1, h + 1)
         ..lineTo(-1, fuelTop);
       for (double x = 0; x <= w + 1; x++) {
         fuel.lineTo(x,
-            fuelTop +
-                waveAmp *
-                    math.sin(
-                        x / w * cycles * 2 * math.pi + wavePhase));
+            fuelTop + waveAmp * math.sin(x / w * cycles * 2 * math.pi + wavePhase));
       }
-      fuel
-        ..lineTo(w + 1, h + 1)
-        ..close();
+      fuel..lineTo(w + 1, h + 1)..close();
 
       canvas.save();
       canvas.clipPath(tank);
 
-      // Base fill
-      canvas.drawPath(fuel, Paint()
-        ..color = color.withOpacity(0.50)
-        ..style = PaintingStyle.fill);
+      canvas.drawPath(fuel,
+          Paint()..color = color.withOpacity(0.50)..style = PaintingStyle.fill);
 
-      // Top-of-fill shimmer (lighter near wave line)
       final shimRect = Rect.fromLTWH(0, fuelTop, w, (h - fuelTop) * 0.35);
       canvas.drawRect(shimRect, Paint()
         ..style = PaintingStyle.fill
         ..shader = LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            color.withOpacity(0.22),
-            color.withOpacity(0.0),
-          ],
+          colors: [color.withOpacity(0.22), color.withOpacity(0.0)],
         ).createShader(shimRect));
 
-      // Wave surface line
       final wave = Path()
         ..moveTo(-1, fuelTop + waveAmp * math.sin(wavePhase));
       for (double x = 0; x <= w + 1; x++) {
         wave.lineTo(x,
-            fuelTop +
-                waveAmp *
-                    math.sin(
-                        x / w * cycles * 2 * math.pi + wavePhase));
+            fuelTop + waveAmp * math.sin(x / w * cycles * 2 * math.pi + wavePhase));
       }
       canvas.drawPath(wave, Paint()
         ..color = color.withOpacity(0.90)
@@ -931,23 +1153,20 @@ class _TankPainter extends CustomPainter {
       canvas.restore();
     }
 
-    // 4 ── Left-edge highlight (glass / metal reflection)
+    // 4 ── Glass highlight
     canvas.save();
     canvas.clipPath(tank);
-    final highlightRect = Rect.fromLTWH(0, 0, w * 0.09, h);
-    canvas.drawRect(highlightRect, Paint()
+    final hl = Rect.fromLTWH(0, 0, w * 0.09, h);
+    canvas.drawRect(hl, Paint()
       ..style = PaintingStyle.fill
       ..shader = LinearGradient(
         begin: Alignment.centerLeft,
         end: Alignment.centerRight,
-        colors: [
-          Colors.white.withOpacity(0.07),
-          Colors.transparent,
-        ],
-      ).createShader(highlightRect));
+        colors: [Colors.white.withOpacity(0.07), Colors.transparent],
+      ).createShader(hl));
     canvas.restore();
 
-    // 5 ── Tank outline
+    // 5 ── Outline
     canvas.drawPath(tank, Paint()
       ..color = color.withOpacity(0.65)
       ..style = PaintingStyle.stroke
@@ -958,21 +1177,23 @@ class _TankPainter extends CustomPainter {
 
   Path _tankPath(double w, double h) {
     switch (shape) {
-      case 'cylindrical_horizontal':
-        // Horizontal pill — corner radius = half the height
-        return Path()
-          ..addRRect(RRect.fromRectAndRadius(
-              Rect.fromLTWH(0, 0, w, h), Radius.circular(h / 2)));
+      case 'cylinder_horizontal':
+        return Path()..addRRect(RRect.fromRectAndRadius(
+            Rect.fromLTWH(0, 0, w, h), Radius.circular(h / 2)));
       case 'rectangular':
-        // Box with small rounded corners
+        return Path()..addRRect(RRect.fromRectAndRadius(
+            Rect.fromLTWH(0, 0, w, h), const Radius.circular(12)));
+      case 'sphere':
+        return Path()..addOval(Rect.fromLTWH(0, 0, w, h));
+      case 'cone_vertical':
         return Path()
-          ..addRRect(RRect.fromRectAndRadius(
-              Rect.fromLTWH(0, 0, w, h), const Radius.circular(12)));
-      default: // cylindrical_vertical
-        // Vertical pill — corner radius = half the width
-        return Path()
-          ..addRRect(RRect.fromRectAndRadius(
-              Rect.fromLTWH(0, 0, w, h), Radius.circular(w / 2)));
+          ..moveTo(w / 2, 0)
+          ..lineTo(w, h)
+          ..lineTo(0, h)
+          ..close();
+      default: // cylinder_vertical, ellipse_vertical, capsule, multi_section
+        return Path()..addRRect(RRect.fromRectAndRadius(
+            Rect.fromLTWH(0, 0, w, h), Radius.circular(w / 2)));
     }
   }
 
@@ -981,7 +1202,6 @@ class _TankPainter extends CustomPainter {
       ..color = Colors.white.withOpacity(0.13)
       ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;
-
     canvas.save();
     canvas.clipPath(tank);
     for (final level in [0.25, 0.50, 0.75]) {
@@ -999,72 +1219,421 @@ class _TankPainter extends CustomPainter {
       old.color != color;
 }
 
-// ── Shape selector ────────────────────────────────────────────────────────────
+// ── Tank shape grid ───────────────────────────────────────────────────────────
 
-class _ShapeSelector extends StatelessWidget {
+class _TankShapeGrid extends StatelessWidget {
   final String selected;
   final ValueChanged<String> onChanged;
-  final Map<String, String> labels;
 
-  const _ShapeSelector({
-    required this.selected,
-    required this.onChanged,
-    required this.labels,
-  });
+  const _TankShapeGrid({required this.selected, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 4,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: 0.78,
+      ),
+      itemCount: _kShapes.length,
+      itemBuilder: (_, i) {
+        final s = _kShapes[i];
+        final sel = selected == s.id;
+        return GestureDetector(
+          onTap: () => onChanged(s.id),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+            decoration: BoxDecoration(
+              color: sel
+                  ? AppColors.primary.withOpacity(0.12)
+                  : AppColors.surfaceLight,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: sel ? AppColors.primary : AppColors.border,
+                  width: sel ? 1.8 : 1),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: CustomPaint(
+                    painter: _ShapeIconPainter(
+                        shape: s.id,
+                        color: sel ? AppColors.primary : AppColors.textMuted),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  s.name,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: sel ? AppColors.text : AppColors.textMuted,
+                    fontSize: 9,
+                    fontWeight:
+                        sel ? FontWeight.w700 : FontWeight.normal,
+                    height: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  s.desc,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: AppColors.textMuted,
+                      fontSize: 8,
+                      height: 1.1),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ── Shape icon painter ────────────────────────────────────────────────────────
+
+class _ShapeIconPainter extends CustomPainter {
+  final String shape;
+  final Color color;
+  const _ShapeIconPainter({required this.shape, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size sz) {
+    final w = sz.width;
+    final h = sz.height;
+    final fill = Paint()
+      ..color = color.withOpacity(0.25)
+      ..style = PaintingStyle.fill;
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    switch (shape) {
+      case 'rectangular':
+        final r = RRect.fromRectAndRadius(
+            Rect.fromLTRB(3, 5, w - 3, h - 5), const Radius.circular(3));
+        canvas.drawRRect(r, fill);
+        canvas.drawRRect(r, stroke);
+
+      case 'cylinder_vertical':
+        final top = RRect.fromRectAndRadius(
+            Rect.fromLTRB(6, 2, w - 6, 10), const Radius.circular(4));
+        canvas.drawRect(Rect.fromLTRB(6, 6, w - 6, h - 6), fill);
+        canvas.drawRRect(top, fill);
+        canvas.drawLine(Offset(6, 6), Offset(6, h - 6), stroke);
+        canvas.drawLine(Offset(w - 6, 6), Offset(w - 6, h - 6), stroke);
+        canvas.drawRRect(top, stroke);
+        final bot = RRect.fromRectAndRadius(
+            Rect.fromLTRB(6, h - 10, w - 6, h - 2), const Radius.circular(4));
+        canvas.drawRRect(bot, fill);
+        canvas.drawRRect(bot, stroke);
+
+      case 'cylinder_horizontal':
+        final r = RRect.fromRectAndRadius(
+            Rect.fromLTRB(2, 9, w - 2, h - 9), Radius.circular((h - 18) / 2));
+        canvas.drawRRect(r, fill);
+        canvas.drawRRect(r, stroke);
+
+      case 'cone_vertical':
+        final path = Path()
+          ..moveTo(w / 2, 2)
+          ..lineTo(w - 3, h - 4)
+          ..lineTo(3, h - 4)
+          ..close();
+        canvas.drawPath(path, fill);
+        canvas.drawPath(path, stroke);
+
+      case 'ellipse_vertical':
+        final rect = Rect.fromLTRB(6, 2, w - 6, h - 2);
+        canvas.drawOval(rect, fill);
+        canvas.drawOval(rect, stroke);
+
+      case 'sphere':
+        canvas.drawCircle(Offset(w / 2, h / 2), math.min(w, h) / 2 - 3, fill);
+        canvas.drawCircle(Offset(w / 2, h / 2), math.min(w, h) / 2 - 3, stroke);
+
+      case 'capsule':
+        final r = RRect.fromRectAndRadius(
+            Rect.fromLTRB(8, 2, w - 8, h - 2), Radius.circular((h - 4) / 2));
+        canvas.drawRRect(r, fill);
+        canvas.drawRRect(r, stroke);
+
+      case 'multi_section':
+        const gap = 3.0;
+        final bh = (h - gap * 3) / 3;
+        for (int i = 0; i < 3; i++) {
+          final top = gap + i * (bh + gap);
+          final r2 = RRect.fromRectAndRadius(
+              Rect.fromLTRB(4, top, w - 4, top + bh),
+              const Radius.circular(3));
+          canvas.drawRRect(r2, fill);
+          canvas.drawRRect(r2, stroke);
+        }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ShapeIconPainter old) =>
+      old.shape != shape || old.color != color;
+}
+
+// ── Dimension input field ─────────────────────────────────────────────────────
+
+class _DimField extends StatelessWidget {
+  final String label;
+  final TextEditingController ctrl;
+
+  const _DimField({required this.label, required this.ctrl});
 
   @override
   Widget build(BuildContext context) => Column(
-        children: labels.entries.map((e) {
-          final sel = selected == e.key;
-          return GestureDetector(
-            onTap: () => onChanged(e.key),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 13),
-              decoration: BoxDecoration(
-                color: sel
-                    ? AppColors.primary.withOpacity(0.12)
-                    : AppColors.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                    color: sel ? AppColors.primary : AppColors.border,
-                    width: sel ? 1.5 : 1),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    e.key == 'rectangular'
-                        ? Icons.crop_square_rounded
-                        : e.key == 'cylindrical_horizontal'
-                            ? Icons.panorama_fish_eye_rounded
-                            : Icons.circle_outlined,
-                    color: sel ? AppColors.primary : AppColors.textMuted,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      e.value,
-                      style: TextStyle(
-                        color:
-                            sel ? AppColors.text : AppColors.textMuted,
-                        fontWeight:
-                            sel ? FontWeight.w700 : FontWeight.normal,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ),
-                  if (sel)
-                    const Icon(Icons.check_circle_rounded,
-                        color: AppColors.primary, size: 18),
-                ],
-              ),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600)),
+          const SizedBox(height: 5),
+          TextField(
+            controller: ctrl,
+            keyboardType:
+                const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(color: AppColors.text, fontSize: 15),
+            decoration: InputDecoration(
+              suffixText: 'm',
+              suffixStyle: const TextStyle(
+                  color: AppColors.textMuted, fontWeight: FontWeight.w600),
+              filled: true,
+              fillColor: AppColors.surface,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                  vertical: 14, horizontal: 14),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppColors.border)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppColors.border)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:
+                      const BorderSide(color: AppColors.primary, width: 2)),
             ),
-          );
-        }).toList(),
+          ),
+        ],
       );
+}
+
+// ── Toggle row ────────────────────────────────────────────────────────────────
+
+class _ToggleRow extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _ToggleRow({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) => Row(children: [
+        Container(
+          padding: const EdgeInsets.all(7),
+          decoration: BoxDecoration(
+            color: iconColor.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: iconColor, size: 18),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+              Text(subtitle,
+                  style: const TextStyle(
+                      color: AppColors.textMuted, fontSize: 11)),
+            ],
+          ),
+        ),
+        Switch(
+          value: value,
+          onChanged: onChanged,
+          activeColor: AppColors.primary,
+        ),
+      ]);
+}
+
+// ── Config card ───────────────────────────────────────────────────────────────
+
+class _ConfigCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  final Widget child;
+
+  const _ConfigCard({
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(icon, color: AppColors.primary, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                          color: AppColors.text,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        )),
+                    if (subtitle != null)
+                      Text(subtitle!,
+                          style: const TextStyle(
+                              color: AppColors.textMuted, fontSize: 11)),
+                  ],
+                ),
+              ),
+            ]),
+            const SizedBox(height: 16),
+            child,
+          ],
+        ),
+      );
+}
+
+// ── Config sync bar ───────────────────────────────────────────────────────────
+
+class _ConfigSyncBar extends StatelessWidget {
+  final bool loading;
+  final bool loaded;
+  final DateTime? syncedAt;
+  final VoidCallback? onRefresh;
+
+  const _ConfigSyncBar({
+    required this.loading,
+    required this.loaded,
+    required this.syncedAt,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: loading
+            ? AppColors.primary.withOpacity(0.07)
+            : loaded
+                ? AppColors.success.withOpacity(0.08)
+                : AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: loading
+              ? AppColors.primary.withOpacity(0.30)
+              : loaded
+                  ? AppColors.success.withOpacity(0.35)
+                  : AppColors.border,
+        ),
+      ),
+      child: Row(children: [
+        SizedBox(
+          width: 20,
+          height: 20,
+          child: loading
+              ? const CircularProgressIndicator(
+                  color: AppColors.primary, strokeWidth: 2.2)
+              : Icon(
+                  loaded
+                      ? Icons.check_circle_outline_rounded
+                      : Icons.sync_rounded,
+                  color: loaded ? AppColors.success : AppColors.textMuted,
+                  size: 20),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            loading
+                ? 'Fetching config from device…'
+                : loaded
+                    ? 'Synced from device${syncedAt != null ? '  ·  ${syncedAt!.toLocal().toString().substring(11, 19)}' : ''}'
+                    : 'Not synced yet',
+            style: TextStyle(
+              color: loading
+                  ? AppColors.primary
+                  : loaded
+                      ? AppColors.success
+                      : AppColors.textMuted,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        if (!loading)
+          GestureDetector(
+            onTap: onRefresh,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.sync_rounded, color: AppColors.primary, size: 13),
+                SizedBox(width: 4),
+                Text('Sync',
+                    style: TextStyle(
+                        color: AppColors.primary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700)),
+              ]),
+            ),
+          ),
+      ]),
+    );
+  }
 }
 
 // ── Section label ─────────────────────────────────────────────────────────────
@@ -1106,113 +1675,6 @@ class _Card extends StatelessWidget {
       );
 }
 
-// ── Config sync bar ───────────────────────────────────────────────────────────
-
-class _ConfigSyncBar extends StatelessWidget {
-  final bool loading;
-  final bool loaded;
-  final DateTime? syncedAt;
-  final VoidCallback? onRefresh;
-
-  const _ConfigSyncBar({
-    required this.loading,
-    required this.loaded,
-    required this.syncedAt,
-    required this.onRefresh,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 250),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: loading
-            ? AppColors.primary.withOpacity(0.07)
-            : loaded
-                ? AppColors.success.withOpacity(0.08)
-                : AppColors.surfaceLight,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: loading
-              ? AppColors.primary.withOpacity(0.30)
-              : loaded
-                  ? AppColors.success.withOpacity(0.35)
-                  : AppColors.border,
-        ),
-      ),
-      child: Row(
-        children: [
-          // Icon / spinner
-          SizedBox(
-            width: 20,
-            height: 20,
-            child: loading
-                ? const CircularProgressIndicator(
-                    color: AppColors.primary, strokeWidth: 2.2)
-                : Icon(
-                    loaded
-                        ? Icons.check_circle_outline_rounded
-                        : Icons.sync_rounded,
-                    color: loaded ? AppColors.success : AppColors.textMuted,
-                    size: 20,
-                  ),
-          ),
-          const SizedBox(width: 10),
-
-          // Label
-          Expanded(
-            child: Text(
-              loading
-                  ? 'Fetching config from device…'
-                  : loaded
-                      ? 'Synced from device'
-                          '${syncedAt != null ? '  ·  ${syncedAt!.toLocal().toString().substring(11, 19)}' : ''}'
-                      : 'Not synced yet',
-              style: TextStyle(
-                color: loading
-                    ? AppColors.primary
-                    : loaded
-                        ? AppColors.success
-                        : AppColors.textMuted,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-
-          // Refresh button
-          if (!loading)
-            GestureDetector(
-              onTap: onRefresh,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.sync_rounded,
-                        color: AppColors.primary, size: 13),
-                    SizedBox(width: 4),
-                    Text('Sync',
-                        style: TextStyle(
-                            color: AppColors.primary,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700)),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 // ── Metric tile ───────────────────────────────────────────────────────────────
 
 class _MetricTile extends StatelessWidget {
@@ -1230,34 +1692,31 @@ class _MetricTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color: color.withOpacity(0.08),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: color.withOpacity(0.25)),
         ),
-        child: Row(
-          children: [
-            Icon(icon, color: color, size: 20),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(value,
-                      style: TextStyle(
-                          color: color,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w800)),
-                  Text(label,
-                      style: const TextStyle(
-                          color: AppColors.textMuted, fontSize: 10)),
-                ],
-              ),
+        child: Row(children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(value,
+                    style: TextStyle(
+                        color: color,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800)),
+                Text(label,
+                    style: const TextStyle(
+                        color: AppColors.textMuted, fontSize: 10)),
+              ],
             ),
-          ],
-        ),
+          ),
+        ]),
       );
 }
