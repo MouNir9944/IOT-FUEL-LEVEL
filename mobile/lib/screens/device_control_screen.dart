@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../core/api_client.dart';
 import '../core/app_strings.dart';
 import '../core/constants.dart';
 import '../core/socket_service.dart';
 import '../models/device.dart';
+import '../providers/auth_provider.dart';
 import '../widgets/status_badge.dart';
 
 // ── Log entry ─────────────────────────────────────────────────────────────────
@@ -67,6 +69,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   Telemetry? _telemetry;
   String _status = 'unknown';
   late TabController _tabs;
+  late bool _isSuperAdmin;
   late AnimationController _fillAnim;
   late AnimationController _waveAnim;
 
@@ -101,11 +104,12 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   @override
   void initState() {
     super.initState();
-    _device    = widget.device;
-    _status    = _device.lastStatus;
-    _telemetry = _device.lastTelemetry;
+    _device       = widget.device;
+    _status       = _device.lastStatus;
+    _telemetry    = _device.lastTelemetry;
+    _isSuperAdmin = context.read<AuthProvider>().user?.role == 'superadmin';
 
-    _tabs     = TabController(length: 4, vsync: this)
+    _tabs = TabController(length: _isSuperAdmin ? 4 : 2, vsync: this)
       ..addListener(_onTabChanged);
     _fillAnim = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 1400))
@@ -452,18 +456,24 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                 text: s.fuelLevel),
             Tab(icon: const Icon(Icons.settings_rounded, size: 18),
                 text: s.tankConfig),
-            const Tab(
-                icon: Icon(Icons.article_outlined, size: 18),
-                text: 'Logs'),
-            const Tab(
-                icon: Icon(Icons.system_update_rounded, size: 18),
-                text: 'OTA'),
+            if (_isSuperAdmin) ...[
+              const Tab(
+                  icon: Icon(Icons.article_outlined, size: 18),
+                  text: 'Logs'),
+              const Tab(
+                  icon: Icon(Icons.system_update_rounded, size: 18),
+                  text: 'OTA'),
+            ],
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabs,
-        children: [_monitorTab(s), _configTab(s), _logsTab(), _otaTab()],
+        children: [
+          _monitorTab(s),
+          _configTab(s),
+          if (_isSuperAdmin) ...[_logsTab(), _otaTab()],
+        ],
       ),
     );
   }
