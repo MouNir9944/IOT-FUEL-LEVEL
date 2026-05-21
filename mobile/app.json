@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "IoT AC Controller",
-    "slug": "iot-ac-controller",
+    "name": "",
+    "slug": "iot-fuel-level",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,7 +12,7 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.iotac.controller",
+      "bundleIdentifier": "iot.fuel.level",
       "infoPlist": {
         "NSCameraUsageDescription": "Camera is used to scan QR codes for device registration."
       }
@@ -21,7 +21,7 @@
       "adaptiveIcon": {
         "backgroundColor": "#0f172a"
       },
-      "package": "com.iotac.controller",
+      "package": "iot.fuel.level",
       "permissions": ["CAMERA"]
     },
     "plugins": [
@@ -29,7 +29,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow IoT AC to access camera for QR scanning."
+          "cameraPermission": "Allow access to camera for QR scanning."
         }
       ]
     ]

@@ -1,5 +1,5 @@
-name: iot_ac_controller
-description: Droppy – Water Management Mobile App (Flutter)
+name: iot_fuel_level
+description: IoT Fuel Level Mobile App (Flutter)
 publish_to: 'none'
 version: 1.0.0+1
 
