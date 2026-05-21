@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -31,6 +32,23 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   late AnimationController _fillAnim;   // 0 → 1 on first load
   late AnimationController _waveAnim;   // repeating wave
 
+  // ── Config-sync state ──────────────────────────────────────────────────────
+  bool _configLoading = false;
+  bool _configLoaded  = false;
+  DateTime? _configSyncedAt;
+  Timer? _configTimeoutTimer;
+
+  /// Maps firmware shape strings → mobile app shape keys
+  static const _firmwareToShape = <String, String>{
+    'cylinder_vertical':   'cylindrical_vertical',
+    'cylinder_horizontal': 'cylindrical_horizontal',
+    'rectangular':         'rectangular',
+    'cone_vertical':       'cylindrical_vertical',   // best visual fallback
+    'ellipse_vertical':    'cylindrical_vertical',
+    'sphere':              'cylindrical_vertical',
+    'capsule':             'cylindrical_vertical',
+  };
+
   // ── Tank config form state ─────────────────────────────────────────────────
   String _shape = 'cylindrical_vertical';
   final _heightCtrl    = TextEditingController(text: '200');
@@ -48,7 +66,8 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     _status    = _device.lastStatus;
     _telemetry = _device.lastTelemetry;
 
-    _tabs     = TabController(length: 2, vsync: this);
+    _tabs     = TabController(length: 2, vsync: this)
+      ..addListener(_onTabChanged);
     _fillAnim = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 1400))
       ..forward();
@@ -71,8 +90,10 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     _widthCtrl.dispose();
     _offsetCtrl.dispose();
     _thresholdCtrl.dispose();
+    _configTimeoutTimer?.cancel();
     SocketService.off('telemetry_update',     id: 'device_control');
     SocketService.off('device_status_change', id: 'device_control');
+    SocketService.off('config_report',        id: 'device_control_cfg');
     SocketService.removeReconnectCallback(_onSocketReconnect);
     super.dispose();
   }
@@ -100,6 +121,15 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       if (m['device_id'] != _device.deviceId) return;
       setState(() => _status = m['status'] as String? ?? _status);
     }, id: 'device_control');
+
+    // Config report — device responds to "report_config" command
+    SocketService.on('config_report', (data) {
+      if (!mounted) return;
+      final m = Map<String, dynamic>.from(data as Map);
+      if (m['device_id'] != _device.deviceId) return;
+      final cfg = m['config'];
+      if (cfg is Map) _applyConfigReport(Map<String, dynamic>.from(cfg));
+    }, id: 'device_control_cfg');
   }
 
   void _onSocketReconnect() =>
@@ -161,6 +191,85 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
       if (mounted) setState(() => _sending = false);
     }
   }
+
+  // ── Config sync ───────────────────────────────────────────────────────────
+
+  /// Called whenever the tab index changes.  Triggers a config fetch the first
+  /// time the user opens the "Tank Config" tab.
+  void _onTabChanged() {
+    if (!_tabs.indexIsChanging &&
+        _tabs.index == 1 &&
+        !_configLoaded &&
+        !_configLoading) {
+      _requestDeviceConfig();
+    }
+  }
+
+  /// Sends a `report_config` command to the backend.
+  /// The device will reply on `device/{MAC}/config_report`, which the backend
+  /// forwards as a `config_report` socket event.
+  Future<void> _requestDeviceConfig() async {
+    if (_configLoading) return;
+    setState(() {
+      _configLoading = true;
+      _configLoaded  = false;
+    });
+    try {
+      await ApiClient.instance.post(
+        '/devices/${_device.id}/command',
+        data: {'cmd': 'report_config'},
+      );
+      // The actual result arrives asynchronously via the socket listener.
+      // Start a 10 s watchdog so the spinner doesn't spin forever if the
+      // device is offline or slow to respond.
+      _configTimeoutTimer?.cancel();
+      _configTimeoutTimer = Timer(const Duration(seconds: 10), () {
+        if (mounted && _configLoading) setState(() => _configLoading = false);
+      });
+    } on DioException catch (_) {
+      if (mounted) setState(() => _configLoading = false);
+    }
+  }
+
+  /// Translates the firmware-format config map (metres, firmware shape names)
+  /// into the form fields (centimetres, display shape names).
+  void _applyConfigReport(Map<String, dynamic> config) {
+    _configTimeoutTimer?.cancel();
+
+    // ── Shape ──────────────────────────────────────────────────────────────
+    final firmwareShape = config['tank_shape'] as String?;
+    if (firmwareShape != null) {
+      final appShape = _firmwareToShape[firmwareShape];
+      if (appShape != null) _shape = appShape;
+    }
+
+    // ── Dimensions: metres → centimetres, radius → diameter ───────────────
+    final raw = config['tank_shape_params'];
+    if (raw is Map) {
+      final hm = (raw['height_m'] as num?)?.toDouble();
+      final rm = (raw['radius_m'] as num?)?.toDouble();
+      final lm = (raw['length_m'] as num?)?.toDouble();
+      final wm = (raw['width_m']  as num?)?.toDouble();
+      if (hm != null) _heightCtrl.text   = _fmtCm(hm * 100);
+      if (rm != null) _diameterCtrl.text = _fmtCm(rm * 200); // radius→diameter
+      if (lm != null) _lengthCtrl.text   = _fmtCm(lm * 100);
+      if (wm != null) _widthCtrl.text    = _fmtCm(wm * 100);
+    }
+
+    // ── Alert threshold (stored app-side in DB, appended by backend) ───────
+    final alertPct = (config['alert_threshold_pct'] as num?)?.toDouble();
+    if (alertPct != null) _thresholdCtrl.text = alertPct.toStringAsFixed(0);
+
+    setState(() {
+      _configLoaded   = true;
+      _configLoading  = false;
+      _configSyncedAt = DateTime.now();
+    });
+  }
+
+  /// Format a centimetre value: whole number if no fraction, else 1 decimal.
+  String _fmtCm(double cm) =>
+      cm == cm.roundToDouble() ? cm.toStringAsFixed(0) : cm.toStringAsFixed(1);
 
   void _snack(String msg, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -411,6 +520,18 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Sync status bar ────────────────────────────────────────────
+            _ConfigSyncBar(
+              loading:   _configLoading,
+              loaded:    _configLoaded,
+              syncedAt:  _configSyncedAt,
+              onRefresh: _configLoading ? null : () {
+                setState(() { _configLoaded = false; });
+                _requestDeviceConfig();
+              },
+            ),
+            const SizedBox(height: 12),
+
             // Hint banner
             Container(
               padding: const EdgeInsets.all(12),
@@ -983,6 +1104,113 @@ class _Card extends StatelessWidget {
         ),
         child: child,
       );
+}
+
+// ── Config sync bar ───────────────────────────────────────────────────────────
+
+class _ConfigSyncBar extends StatelessWidget {
+  final bool loading;
+  final bool loaded;
+  final DateTime? syncedAt;
+  final VoidCallback? onRefresh;
+
+  const _ConfigSyncBar({
+    required this.loading,
+    required this.loaded,
+    required this.syncedAt,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: loading
+            ? AppColors.primary.withOpacity(0.07)
+            : loaded
+                ? AppColors.success.withOpacity(0.08)
+                : AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: loading
+              ? AppColors.primary.withOpacity(0.30)
+              : loaded
+                  ? AppColors.success.withOpacity(0.35)
+                  : AppColors.border,
+        ),
+      ),
+      child: Row(
+        children: [
+          // Icon / spinner
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: loading
+                ? const CircularProgressIndicator(
+                    color: AppColors.primary, strokeWidth: 2.2)
+                : Icon(
+                    loaded
+                        ? Icons.check_circle_outline_rounded
+                        : Icons.sync_rounded,
+                    color: loaded ? AppColors.success : AppColors.textMuted,
+                    size: 20,
+                  ),
+          ),
+          const SizedBox(width: 10),
+
+          // Label
+          Expanded(
+            child: Text(
+              loading
+                  ? 'Fetching config from device…'
+                  : loaded
+                      ? 'Synced from device'
+                          '${syncedAt != null ? '  ·  ${syncedAt!.toLocal().toString().substring(11, 19)}' : ''}'
+                      : 'Not synced yet',
+              style: TextStyle(
+                color: loading
+                    ? AppColors.primary
+                    : loaded
+                        ? AppColors.success
+                        : AppColors.textMuted,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+
+          // Refresh button
+          if (!loading)
+            GestureDetector(
+              onTap: onRefresh,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.sync_rounded,
+                        color: AppColors.primary, size: 13),
+                    SizedBox(width: 4),
+                    Text('Sync',
+                        style: TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 // ── Metric tile ───────────────────────────────────────────────────────────────

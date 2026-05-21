@@ -12,6 +12,7 @@ const SUBSCRIPTIONS = [
   'device/+/telemetry',
   'device/+/logs',
   'device/+/status',
+  'device/+/config_report',   // device replies here after "report_config" cmd
 ];
 
 // MAC address is always slot [1]:  device / {MAC} / {suffix}
@@ -144,6 +145,38 @@ async function handleStatus(deviceStrId: string, raw: string): Promise<void> {
   }
 }
 
+// Handle device/{MAC}/config_report  — sent by the device after a "report_config"
+// command.  The payload is the full NVS config (firmware format).
+// We append alert_threshold_pct from the stored telemetry (app-side field) and
+// relay the merged object to connected app clients via Socket.IO.
+async function handleConfigReport(
+  deviceStrId: string,
+  rawConfig: Record<string, unknown>,
+): Promise<void> {
+  try {
+    // alert_threshold_pct lives in last_telemetry, not in firmware config
+    const device = await Device.findOne({ device_id: deviceStrId })
+      .select('last_telemetry')
+      .lean();
+    const tel = device?.last_telemetry as Record<string, unknown> | null;
+    const alertPct = (tel?.alert_threshold_pct as number | undefined) ?? 20;
+
+    const io = getSocketServer();
+    if (io) {
+      io.to(`device:${deviceStrId}`).emit('config_report', {
+        device_id: deviceStrId,
+        config: { ...rawConfig, alert_threshold_pct: alertPct },
+      });
+      logger.info('Config report relayed to app', { device: deviceStrId });
+    }
+  } catch (err) {
+    logger.error('handleConfigReport error', {
+      device: deviceStrId,
+      error: (err as Error).message,
+    });
+  }
+}
+
 function onMessage(topic: string, message: Buffer): void {
   const deviceStrId = extractDeviceId(topic);
 
@@ -172,6 +205,18 @@ function onMessage(topic: string, message: Buffer): void {
       parsed = message.toString();
     }
     void handleDeviceLog(deviceStrId, parsed);
+    return;
+  }
+
+  if (topic.endsWith('/config_report')) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.toString());
+    } catch {
+      logger.debug('Non-JSON config_report message', { topic });
+      return;
+    }
+    void handleConfigReport(deviceStrId, parsed as Record<string, unknown>);
   }
 }
 

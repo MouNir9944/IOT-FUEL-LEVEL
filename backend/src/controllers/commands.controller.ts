@@ -65,6 +65,11 @@ const commandSchema = z.discriminatedUnion('cmd', [
     cmd: z.literal('ota_update'),
     url: z.string().url(),
   }),
+
+  // ── report_config: ask device to publish its stored config ───────────────────
+  z.object({
+    cmd: z.literal('report_config'),
+  }),
 ]);
 
 // ── Controller ────────────────────────────────────────────────────────────────
@@ -152,6 +157,15 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
     } else if (command.cmd === 'ota_update') {
       mqttClient.publish(`device/${mac}/ota`, command.url, { qos: 1, retain: false });
       logger.info('OTA update triggered', { device: mac, url: command.url });
+
+    } else if (command.cmd === 'report_config') {
+      // Ask the device to publish its current NVS config to device/{mac}/config_report
+      mqttClient.publish(
+        `device/${mac}/cmd`,
+        JSON.stringify({ cmd: 'report_config' }),
+        { qos: 1, retain: false },
+      );
+      logger.info('report_config request forwarded to device', { device: mac });
     }
 
     await CommandLog.create({
