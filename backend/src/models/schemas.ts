@@ -108,6 +108,8 @@ export interface IDevice extends Document {
   last_lwt_payload: Record<string, unknown> | null;
   last_telemetry_at: Date | null;
   last_telemetry: Record<string, unknown> | null;
+  /** Last firmware config successfully sent through the app (firmware format, metres). */
+  last_config: Record<string, unknown> | null;
   alert_on_offline: boolean;
   /** Firmware/software version reported by the device (e.g. "1.0.0") */
   sw_version: string | null;
@@ -132,6 +134,7 @@ const DeviceSchema = new Schema<IDevice>(
     last_lwt_payload: { type: Schema.Types.Mixed, default: null },
     last_telemetry_at: { type: Date, default: null },
     last_telemetry: { type: Schema.Types.Mixed, default: null },
+    last_config:    { type: Schema.Types.Mixed, default: null },
     alert_on_offline: { type: Boolean, default: true },
     sw_version: { type: String, default: null },
     hw_version: { type: String, default: null },

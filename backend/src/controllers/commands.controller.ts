@@ -84,6 +84,49 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
   }
 
   try {
+    const command = parsed.data;
+
+    // ── report_config: served instantly from DB — no MQTT round-trip ─────────
+    //
+    // The firmware has no "report_config" command handler.  Every payload it
+    // receives on device/{mac}/config is treated as a config write.  Instead of
+    // asking the device to echo back its NVS, we store the config on the backend
+    // every time it is written (update_config / set_config below) and serve that
+    // stored copy here, so the app gets a response immediately.
+    if (command.cmd === 'report_config') {
+      const deviceDoc = await Device
+        .findById(id)
+        .select('device_id last_config last_telemetry')
+        .lean();
+      if (!deviceDoc) {
+        res.status(404).json({ error: 'Device not found' });
+        return;
+      }
+
+      const mac          = deviceDoc.device_id;
+      const storedConfig = (deviceDoc.last_config as Record<string, unknown> | null) ?? {};
+      const tel          = deviceDoc.last_telemetry as Record<string, unknown> | null;
+      const alertPct     = (tel?.alert_threshold_pct as number | undefined) ?? 20;
+      const tempAlertC   = (tel?.temp_alert_c         as number | undefined) ?? 80;
+
+      const io = getSocketServer();
+      if (io) {
+        io.to(`device:${mac}`).emit('config_report', {
+          device_id: mac,
+          config: {
+            ...storedConfig,
+            alert_threshold_pct: alertPct,
+            temp_alert_c:        tempAlertC,
+            receivedAt: new Date().toISOString(),
+          },
+        });
+      }
+      logger.info('Config report served from DB', { device: mac });
+      res.json({ message: 'Config report delivered', device_id: mac });
+      return;
+    }
+
+    // ── All other commands require an active MQTT connection ──────────────────
     const device = await Device.findById(id).select('device_id last_status').lean();
     if (!device) {
       res.status(404).json({ error: 'Device not found' });
@@ -96,13 +139,13 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const command = parsed.data;
     const mac = device.device_id;
 
-    // ── Route each command type ───────────────────────────────────────────────
-
     if (command.cmd === 'update_config') {
-      // Already in device format — publish directly to device/{MAC}/config
+      // Persist to last_config BEFORE publishing so report_config can immediately
+      // return the new values even if the socket event arrives before the write.
+      await Device.findByIdAndUpdate(id, { last_config: command.config });
+
       mqttClient.publish(
         `device/${mac}/config`,
         JSON.stringify(command.config),
@@ -123,7 +166,7 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       // ── Dimensions: cm → m, diameter → radius ───────────────────────────────
       const params: Record<string, number> = {};
       if (v.height_cm   !== undefined) params.height_m  = v.height_cm  / 100;
-      if (v.diameter_cm !== undefined) params.radius_m  = v.diameter_cm / 200; // ÷2 for radius, ÷100 for m
+      if (v.diameter_cm !== undefined) params.radius_m  = v.diameter_cm / 200;
       if (v.length_cm   !== undefined) params.length_m  = v.length_cm  / 100;
       if (v.width_cm    !== undefined) params.width_m   = v.width_cm   / 100;
       if (Object.keys(params).length > 0) deviceCfg.tank_shape_params = params;
@@ -132,17 +175,21 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       if (v.reporting_interval_s !== undefined)
         deviceCfg.reporting_interval_s = v.reporting_interval_s;
       if (v.timezone_offset_min !== undefined)
-        deviceCfg.timezone_offset_min = v.timezone_offset_min;
-      if (v.gps_enabled  !== undefined) deviceCfg.gps_enabled  = v.gps_enabled;
-      if (v.debug_mode   !== undefined) deviceCfg.debug_mode   = v.debug_mode;
+        deviceCfg.timezone_offset_min  = v.timezone_offset_min;
+      if (v.gps_enabled !== undefined) deviceCfg.gps_enabled = v.gps_enabled;
+      if (v.debug_mode  !== undefined) deviceCfg.debug_mode  = v.debug_mode;
 
-      // ── App-side-only thresholds: stored on the device doc, not sent to firmware ──
-      // (firmware has no alert logic — thresholds are evaluated in the mobile app)
+      // ── Single DB write: app-side thresholds + last_config merge ─────────────
+      // Thresholds are app-only (firmware has no alert logic).
+      // Firmware fields are merged into last_config so report_config can return them.
       const dbUpdate: Record<string, unknown> = {};
       if (v.alert_threshold_pct !== undefined)
         dbUpdate['last_telemetry.alert_threshold_pct'] = v.alert_threshold_pct;
       if (v.temp_alert_c !== undefined)
         dbUpdate['last_telemetry.temp_alert_c'] = v.temp_alert_c;
+      for (const [k, cfgV] of Object.entries(deviceCfg)) {
+        dbUpdate[`last_config.${k}`] = cfgV;
+      }
       if (Object.keys(dbUpdate).length > 0) {
         await Device.findByIdAndUpdate(id, dbUpdate);
       }
@@ -159,26 +206,12 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       });
 
     } else if (command.cmd === 'ota_update') {
-      // Firmware expects JSON {"cmd":"ota_update","url":"..."} on the /ota topic
       mqttClient.publish(
         `device/${mac}/ota`,
         JSON.stringify({ cmd: 'ota_update', url: command.url }),
         { qos: 1, retain: false },
       );
       logger.info('OTA update triggered', { device: mac, url: command.url });
-
-    } else if (command.cmd === 'report_config') {
-      // Ask the device to publish its current NVS config to device/{mac}/config_report.
-      // Publish to device/{mac}/config — the same channel the firmware already subscribes
-      // to for all config updates — because it doesn't subscribe to device/{mac}/cmd.
-      // The firmware identifies this as a command (not a config write) by checking for
-      // the "cmd" field in the payload.
-      mqttClient.publish(
-        `device/${mac}/config`,
-        JSON.stringify({ cmd: 'report_config' }),
-        { qos: 1, retain: false },
-      );
-      logger.info('report_config request forwarded to device', { device: mac });
     }
 
     await CommandLog.create({
