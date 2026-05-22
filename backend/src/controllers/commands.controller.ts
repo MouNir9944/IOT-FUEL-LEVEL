@@ -86,13 +86,19 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
   try {
     const command = parsed.data;
 
-    // ── report_config: served instantly from DB — no MQTT round-trip ─────────
+    // ── report_config: two-phase sync ────────────────────────────────────────
     //
-    // The firmware has no "report_config" command handler.  Every payload it
-    // receives on device/{mac}/config is treated as a config write.  Instead of
-    // asking the device to echo back its NVS, we store the config on the backend
-    // every time it is written (update_config / set_config below) and serve that
-    // stored copy here, so the app gets a response immediately.
+    // The firmware has no dedicated report_config handler — every payload on
+    // device/{mac}/config is a config write.  We work around this with two steps:
+    //
+    // Phase 1 (immediate): emit whatever is stored in last_config + thresholds
+    //   so the app has a fast response and the form is populated right away.
+    //
+    // Phase 2 (accurate, ~200 ms): send {} as a no-op probe to the device.
+    //   The device changes nothing in NVS (no recognised keys) but logs the full
+    //   current state: "Config applied: interval=10s tz=60min shape=…"
+    //   mqtt.service.ts parses that log and emits a second config_report with
+    //   the real NVS values, which overwrites the Phase-1 values in the app.
     if (command.cmd === 'report_config') {
       const deviceDoc = await Device
         .findById(id)
@@ -109,6 +115,7 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       const alertPct     = (tel?.alert_threshold_pct as number | undefined) ?? 20;
       const tempAlertC   = (tel?.temp_alert_c         as number | undefined) ?? 80;
 
+      // Phase 1: immediate DB response
       const io = getSocketServer();
       if (io) {
         io.to(`device:${mac}`).emit('config_report', {
@@ -121,8 +128,21 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
           },
         });
       }
-      logger.info('Config report served from DB', { device: mac });
-      res.json({ message: 'Config report delivered', device_id: mac });
+      logger.info('Config report (DB) served immediately', { device: mac });
+
+      // Phase 2: {} probe — triggers "Config applied: …" log on device
+      // mqtt.service.ts will parse that log and emit a second, accurate config_report.
+      const mqttClient = getMqttClient();
+      if (mqttClient) {
+        mqttClient.publish(
+          `device/${mac}/config`,
+          JSON.stringify({}),
+          { qos: 1, retain: false },
+        );
+        logger.info('Config probe {} sent to device', { device: mac });
+      }
+
+      res.json({ message: 'Config report initiated', device_id: mac });
       return;
     }
 
