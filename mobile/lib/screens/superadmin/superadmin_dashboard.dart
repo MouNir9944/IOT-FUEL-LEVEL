@@ -1,4 +1,5 @@
-﻿import 'package:dio/dio.dart';
+﻿import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -67,6 +68,82 @@ class _LogItem {
 }
 
 
+// ── Live MQTT device log entry ────────────────────────────────────────────────
+// The firmware sends JSON: {"level":"Failed","code":"NO_CHANGE","message":"...","ts":…}
+// or plain strings.  We parse both formats and infer severity.
+
+class _LiveLog {
+  final String deviceId;
+  final String raw;
+  final String level;    // normalised lowercase
+  final String code;
+  final String message;
+  final DateTime time;
+
+  _LiveLog({
+    required this.deviceId,
+    required this.raw,
+    required this.level,
+    required this.code,
+    required this.message,
+    required this.time,
+  });
+
+  factory _LiveLog.parse(String deviceId, String raw) {
+    String level = 'info', code = '', message = raw;
+    try {
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      level   = (j['level']   as String?)?.toLowerCase() ?? 'info';
+      code    = (j['code']    as String?) ?? '';
+      message = (j['message'] as String?) ?? raw;
+    } catch (_) {
+      // Plain string — infer level from ESP-IDF prefix (I/W/E/D)
+      if (raw.length > 2 && raw[1] == ' ') {
+        switch (raw[0]) {
+          case 'E': level = 'error';   break;
+          case 'W': level = 'warn';    break;
+          case 'D': level = 'debug';   break;
+          case 'I': level = 'info';    break;
+        }
+      }
+    }
+    return _LiveLog(
+      deviceId: deviceId,
+      raw:      raw,
+      level:    level,
+      code:     code,
+      message:  message,
+      time:     DateTime.now(),
+    );
+  }
+
+  Color get levelColor {
+    switch (level) {
+      case 'error':
+      case 'failed':
+      case 'err':    return AppColors.error;
+      case 'warn':
+      case 'warning':return AppColors.warning;
+      case 'success':return AppColors.success;
+      case 'debug':  return AppColors.textMuted;
+      default:       return AppColors.primary;
+    }
+  }
+
+  String get levelBadge {
+    switch (level) {
+      case 'failed': return 'FAIL';
+      case 'error':
+      case 'err':    return 'ERR';
+      case 'warn':
+      case 'warning':return 'WARN';
+      case 'success':return 'OK';
+      case 'debug':  return 'DBG';
+      default:       return 'INFO';
+    }
+  }
+}
+
 class _DeviceItem {
   final String id;         // MongoDB _id as string
   final String deviceId;   // e.g. "AABBCCDDEEFF"
@@ -118,6 +195,10 @@ class _SuperadminDashboardState extends State<SuperadminDashboard> {
   // Devices tab
   List<_DeviceItem> _devices = [];
 
+  // Live device MQTT logs tab
+  final List<_LiveLog> _liveLogs = [];
+  String? _logFilterDeviceId; // null = show all devices
+
   bool _loading = false;
 
   static const _purple = Color(0xFFA855F7);
@@ -126,6 +207,26 @@ class _SuperadminDashboardState extends State<SuperadminDashboard> {
   void initState() {
     super.initState();
     _fetch();
+    // Listen to all device MQTT log events.
+    // Device rooms are joined after _fetch() completes.
+    SocketService.on('device_log', _onDeviceLog, id: 'superadmin_live_logs');
+  }
+
+  @override
+  void dispose() {
+    SocketService.off('device_log', id: 'superadmin_live_logs');
+    super.dispose();
+  }
+
+  void _onDeviceLog(dynamic data) {
+    if (!mounted) return;
+    final m         = Map<String, dynamic>.from(data as Map);
+    final deviceId  = m['device_id']  as String? ?? '';
+    final rawMsg    = m['log']?.toString() ?? '';
+    setState(() {
+      _liveLogs.insert(0, _LiveLog.parse(deviceId, rawMsg));
+      if (_liveLogs.length > 600) _liveLogs.removeLast();
+    });
   }
 
   // â”€â”€ Fetch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -153,6 +254,11 @@ class _SuperadminDashboardState extends State<SuperadminDashboard> {
     } catch (_) {
     } finally {
       setState(() => _loading = false);
+    }
+    // Subscribe to every device's socket room so the Logs tab receives their
+    // device_log events.  Idempotent — safe to call on every refresh.
+    for (final d in _devices) {
+      SocketService.subscribeToDevice(d.deviceId);
     }
   }
 
@@ -211,6 +317,7 @@ class _SuperadminDashboardState extends State<SuperadminDashboard> {
           PillNavItem(icon: Icons.admin_panel_settings_rounded, label: 'Admins'),
           PillNavItem(icon: Icons.history_rounded,               label: 'LWT'),
           PillNavItem(icon: Icons.memory_rounded,                label: 'Devices'),
+          PillNavItem(icon: Icons.terminal_rounded,              label: 'Logs'),
         ],
         selected:  _navIndex,
         onTap:     (i) => setState(() => _navIndex = i),
@@ -346,6 +453,7 @@ class _SuperadminDashboardState extends State<SuperadminDashboard> {
                   _adminsTab(s),
                   _logsTab(s),
                   _devicesTab(),
+                  _liveLogsTab(),
                 ],
               ),
       ),
@@ -784,7 +892,278 @@ class _SuperadminDashboardState extends State<SuperadminDashboard> {
     );
   }
 
-  // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Live device MQTT logs tab ─────────────────────────────────────────────
+
+  Widget _liveLogsTab() {
+    final deviceIds = _devices.map((d) => d.deviceId).toSet().toList();
+
+    final filtered = _logFilterDeviceId == null
+        ? _liveLogs
+        : _liveLogs.where((l) => l.deviceId == _logFilterDeviceId).toList();
+
+    return Column(
+      children: [
+        // ── Toolbar ──────────────────────────────────────────────────────
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          color: AppColors.surface,
+          child: Row(children: [
+            Container(
+              width: 8, height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _liveLogs.isEmpty ? AppColors.textMuted : AppColors.success,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                filtered.isEmpty
+                    ? 'Waiting for device logs…'
+                    : '${filtered.length} entries — newest first',
+                style: const TextStyle(
+                    color: AppColors.text,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+            // Device filter
+            if (deviceIds.isNotEmpty) ...[
+              GestureDetector(
+                onTap: () async {
+                  final chosen = await showModalBottomSheet<String?>(
+                    context: context,
+                    backgroundColor: AppColors.surface,
+                    shape: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(16)),
+                    ),
+                    builder: (_) => _DeviceFilterSheet(
+                      deviceIds: deviceIds,
+                      devices:   _devices,
+                      selected:  _logFilterDeviceId,
+                    ),
+                  );
+                  if (!mounted || chosen == null) return;
+                  setState(() =>
+                      _logFilterDeviceId = chosen == 'ALL' ? null : chosen);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: _logFilterDeviceId != null
+                        ? _purple.withOpacity(0.15)
+                        : AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: _logFilterDeviceId != null
+                            ? _purple.withOpacity(0.40)
+                            : AppColors.border),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.filter_list_rounded,
+                        color: _logFilterDeviceId != null
+                            ? _purple
+                            : AppColors.textMuted,
+                        size: 14),
+                    const SizedBox(width: 4),
+                    Text(
+                      _logFilterDeviceId != null
+                          ? (_logFilterDeviceId!.length > 11
+                              ? '…${_logFilterDeviceId!.substring(_logFilterDeviceId!.length - 11)}'
+                              : _logFilterDeviceId!)
+                          : 'All devices',
+                      style: TextStyle(
+                          color: _logFilterDeviceId != null
+                              ? _purple
+                              : AppColors.textMuted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ]),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+            // Clear button
+            if (_liveLogs.isNotEmpty)
+              GestureDetector(
+                onTap: () => setState(() {
+                  _liveLogs.clear();
+                }),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text('Clear',
+                      style: TextStyle(
+                          color: AppColors.textMuted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600)),
+                ),
+              ),
+          ]),
+        ),
+        const Divider(height: 1, color: AppColors.border),
+
+        // ── Log rows ─────────────────────────────────────────────────────
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.terminal_rounded,
+                          color: AppColors.textMuted.withOpacity(0.22),
+                          size: 52),
+                      const SizedBox(height: 14),
+                      const Text('No device logs yet',
+                          style: TextStyle(
+                              color: AppColors.textMuted,
+                              fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 6),
+                      Text(
+                        _devices.isEmpty
+                            ? 'Refresh the Devices tab first.'
+                            : 'Logs appear as devices publish\nto device/{mac}/logs.',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 11),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding:
+                      const EdgeInsets.fromLTRB(10, 6, 10, 80),
+                  itemCount: filtered.length,
+                  itemBuilder: (_, i) => _liveLogRow(filtered[i]),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _liveLogRow(_LiveLog l) {
+    final color   = l.levelColor;
+    // Show last segment of MAC (e.g. “35:13:90”) as a short device tag
+    final parts   = l.deviceId.split(':');
+    final shortId = parts.length >= 3
+        ? parts.sublist(parts.length - 3).join(':')
+        : l.deviceId;
+    // Find display name from the device list
+    final devName = _devices
+        .firstWhere((d) => d.deviceId == l.deviceId,
+            orElse: () => _DeviceItem(
+                id: '', deviceId: l.deviceId, name: '',
+                siteName: '', lastStatus: ''))
+        .name;
+    final timeStr = l.time.toLocal().toString().substring(11, 23);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: color.withOpacity(0.12)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Level badge
+          Container(
+            width: 38,
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(5),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              l.levelBadge,
+              style: TextStyle(
+                  color: color,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.4),
+            ),
+          ),
+          const SizedBox(width: 8),
+
+          // Message + meta row
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  l.message,
+                  style: TextStyle(
+                    color: color == AppColors.textMuted
+                        ? AppColors.textMuted
+                        : AppColors.text,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Row(children: [
+                  // Device tag
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: _purple.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      devName.isNotEmpty ? devName : shortId,
+                      style: TextStyle(
+                          color: _purple,
+                          fontSize: 9,
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  // Code tag
+                  if (l.code.isNotEmpty) ...[
+                    const SizedBox(width: 5),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceLight,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        l.code,
+                        style: const TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 9,
+                            fontFamily: 'monospace'),
+                      ),
+                    ),
+                  ],
+                  const Spacer(),
+                  // Timestamp
+                  Text(timeStr,
+                      style: const TextStyle(
+                          color: AppColors.textMuted,
+                          fontSize: 9,
+                          fontFamily: 'monospace')),
+                ]),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _superBadge() => Container(
         padding:
@@ -1270,4 +1649,186 @@ class _OtaDialogState extends State<_OtaDialog> {
                   color: AppColors.textMuted, fontSize: 11)),
         ]),
       );
+}
+
+// ── Device filter bottom sheet ─────────────────────────────────────────────────
+//
+// Shown when the user taps the "All devices" / filter chip in the Live Logs tab.
+// Returns the chosen deviceId via Navigator.pop, or 'ALL' for "show everything".
+
+class _DeviceFilterSheet extends StatelessWidget {
+  final List<String>      deviceIds;
+  final List<_DeviceItem> devices;
+  final String?           selected; // null means 'ALL'
+
+  const _DeviceFilterSheet({
+    required this.deviceIds,
+    required this.devices,
+    required this.selected,
+  });
+
+  static const _purple = Color(0xFFA855F7);
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── Handle bar ───────────────────────────────────────────────────
+          Container(
+            width: 40, height: 4,
+            margin: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: AppColors.border,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+
+          // ── Title ────────────────────────────────────────────────────────
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Filter by device',
+                style: TextStyle(
+                  color: AppColors.text,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+
+          const Divider(height: 1, color: AppColors.border),
+
+          // ── "All devices" option ─────────────────────────────────────────
+          _SheetTile(
+            label: 'All devices',
+            sublabel: '${deviceIds.length} device${deviceIds.length == 1 ? '' : 's'}',
+            icon: Icons.devices_rounded,
+            selected: selected == null,
+            purple: _purple,
+            onTap: () => Navigator.pop(context, 'ALL'),
+          ),
+
+          // ── Per-device options ───────────────────────────────────────────
+          ...deviceIds.map((id) {
+            final dev = devices.firstWhere(
+              (d) => d.deviceId == id,
+              orElse: () => _DeviceItem(
+                  id: '', deviceId: id, name: id,
+                  siteName: '', lastStatus: ''),
+            );
+            final isOnline = dev.lastStatus == 'online';
+            return _SheetTile(
+              label: dev.name.isNotEmpty ? dev.name : id,
+              sublabel: dev.siteName.isNotEmpty ? dev.siteName : id,
+              icon: Icons.memory_rounded,
+              selected: selected == id,
+              purple: _purple,
+              statusColor: isOnline ? AppColors.success : AppColors.textMuted,
+              onTap: () => Navigator.pop(context, id),
+            );
+          }),
+
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// Reusable tile used only inside _DeviceFilterSheet
+class _SheetTile extends StatelessWidget {
+  final String    label;
+  final String    sublabel;
+  final IconData  icon;
+  final bool      selected;
+  final Color     purple;
+  final Color?    statusColor;
+  final VoidCallback onTap;
+
+  const _SheetTile({
+    required this.label,
+    required this.sublabel,
+    required this.icon,
+    required this.selected,
+    required this.purple,
+    required this.onTap,
+    this.statusColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        color: selected ? purple.withOpacity(0.08) : Colors.transparent,
+        child: Row(children: [
+          Container(
+            width: 36, height: 36,
+            decoration: BoxDecoration(
+              color: selected
+                  ? purple.withOpacity(0.15)
+                  : AppColors.surfaceLight,
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Stack(
+              children: [
+                Center(
+                  child: Icon(icon,
+                      color: selected ? purple : AppColors.textMuted,
+                      size: 18),
+                ),
+                if (statusColor != null)
+                  Positioned(
+                    right: 3, bottom: 3,
+                    child: Container(
+                      width: 8, height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: statusColor,
+                        border: Border.all(
+                            color: AppColors.surface, width: 1.5),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: selected ? AppColors.text : AppColors.text,
+                    fontSize: 13,
+                    fontWeight: selected
+                        ? FontWeight.w700
+                        : FontWeight.w500,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (sublabel.isNotEmpty)
+                  Text(
+                    sublabel,
+                    style: const TextStyle(
+                        color: AppColors.textMuted, fontSize: 11),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
+            ),
+          ),
+          if (selected)
+            Icon(Icons.check_rounded, color: purple, size: 18),
+        ]),
+      ),
+    );
+  }
 }

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../core/constants.dart';
@@ -113,10 +114,10 @@ class _LoginScreenState extends State<LoginScreen>
                             ),
                           ],
                         ),
-                        child: const Icon(
-                          Icons.local_gas_station_rounded,
-                          color: Colors.white,
-                          size: 44,
+                        child: const SizedBox(
+                          width: 48,
+                          height: 48,
+                          child: CustomPaint(painter: _TankLogoPainter()),
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -393,4 +394,115 @@ class _LoginScreenState extends State<LoginScreen>
       ),
     );
   }
+}
+
+// ── Tank logo icon painter ─────────────────────────────────────────────────────
+//
+// Draws a cylindrical storage tank (vertical orientation):
+//
+//     ╭──────╮   ← top ellipse cap (depth cue)
+//     │      │   ← cylinder walls
+//     │  ≈≈≈ │   ← fuel level line
+//     │▓▓▓▓▓▓│   ← fuel fill (white, semi-transparent)
+//     ╰──────╯   ← bottom front arc
+//        ┃       ← outlet nozzle
+
+class _TankLogoPainter extends CustomPainter {
+  const _TankLogoPainter();
+
+  @override
+  void paint(Canvas canvas, Size sz) {
+    final w  = sz.width;
+    final h  = sz.height;
+    final cx = w / 2;
+
+    // ── Geometry ────────────────────────────────────────────────────────────
+    const x1    = 6.0;          // left wall x
+    final x2    = w - 6.0;      // right wall x  (= 42 for 48 px)
+    const capRy = 6.0;          // ellipse cap semi-height
+    const yTop  = 7.0;          // top cap centre y
+    final yBot  = h - 9.0;      // bottom cap centre y  (= 39 for 48 px)
+    // 60 % fill level
+    final fuelY = yTop + (yBot - yTop) * 0.40;
+
+    // ── Paints ───────────────────────────────────────────────────────────────
+    final bodyFill = Paint()
+      ..color  = Colors.white.withOpacity(0.18)
+      ..style  = PaintingStyle.fill;
+
+    final fuelFill = Paint()
+      ..color  = Colors.white.withOpacity(0.42)
+      ..style  = PaintingStyle.fill;
+
+    final outline = Paint()
+      ..color     = Colors.white
+      ..style     = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final dimLine = Paint()
+      ..color     = Colors.white.withOpacity(0.55)
+      ..style     = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
+
+    // ── Body background fill ─────────────────────────────────────────────────
+    final bodyRect = Rect.fromLTRB(x1, yTop, x2, yBot);
+    canvas.drawRect(bodyRect, bodyFill);
+    // top cap fill
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx, yTop), width: x2 - x1, height: capRy * 2),
+      bodyFill,
+    );
+    // bottom cap fill
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx, yBot), width: x2 - x1, height: capRy * 2),
+      bodyFill,
+    );
+
+    // ── Fuel fill (lower 60 %, clipped to tank interior) ────────────────────
+    canvas.save();
+    final clipPath = Path()
+      ..addRect(Rect.fromLTRB(x1, fuelY, x2, yBot + capRy + 1));
+    canvas.clipPath(clipPath);
+    canvas.drawRect(Rect.fromLTRB(x1, fuelY, x2, yBot), fuelFill);
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx, yBot), width: x2 - x1, height: capRy * 2),
+      fuelFill,
+    );
+    canvas.restore();
+
+    // ── Outline: top ellipse cap (full, shows depth) ─────────────────────────
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx, yTop), width: x2 - x1, height: capRy * 2),
+      outline,
+    );
+
+    // ── Left and right walls ──────────────────────────────────────────────────
+    canvas.drawLine(Offset(x1, yTop), Offset(x1, yBot), outline);
+    canvas.drawLine(Offset(x2, yTop), Offset(x2, yBot), outline);
+
+    // ── Bottom front arc (visible face of the bottom cap) ────────────────────
+    canvas.drawArc(
+      Rect.fromCenter(center: Offset(cx, yBot), width: x2 - x1, height: capRy * 2),
+      0, math.pi,   // bottom half = front face
+      false, outline,
+    );
+
+    // ── Fuel level ellipse arc (depth-correct front arc) ────────────────────
+    canvas.drawArc(
+      Rect.fromCenter(center: Offset(cx, fuelY), width: x2 - x1, height: capRy * 2),
+      math.pi, math.pi,  // top half = front arc (liquid surface)
+      false, dimLine,
+    );
+
+    // ── Outlet nozzle at the bottom ───────────────────────────────────────────
+    final nozzleY = yBot + capRy - 1;
+    canvas.drawLine(Offset(cx - 4, nozzleY), Offset(cx + 4, nozzleY), outline);
+    canvas.drawLine(Offset(cx, nozzleY), Offset(cx, nozzleY + 5), outline);
+  }
+
+  @override
+  bool shouldRepaint(_TankLogoPainter old) => false;
 }
