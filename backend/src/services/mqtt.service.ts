@@ -12,9 +12,7 @@ const SUBSCRIPTIONS = [
   'device/+/telemetry',
   'device/+/logs',
   'device/+/status',
-  // NOTE: device/+/config_report is intentionally NOT subscribed.
-  // The firmware has no report_config handler — config is stored in MongoDB on
-  // every write and served directly from the DB by the commands controller.
+  'device/+/config_report',   // device publishes current NVS config here after every config write
 ];
 
 // MAC address is always slot [1]:  device / {MAC} / {suffix}
@@ -105,59 +103,93 @@ async function handleTelemetry(
   }
 }
 
-// ── Config log parser ─────────────────────────────────────────────────────────
-// The firmware logs its full NVS state after every config write (including the
-// no-op {} probe sent by report_config):
-//   "I (tick) DEVICE_CONFIG: Config applied: interval=10s tz=60min gps=1 debug=0
-//    shape=cylinder_vertical h=1.00m"
-// Parsing this gives us the actual device NVS config without firmware changes.
-// Works with both plain ESP-IDF log strings and JSON-wrapped log objects.
-function parseConfigFromLog(text: string): Record<string, unknown> | null {
-  const m = text.match(/Config applied:\s*(.+)/);
-  if (!m) return null;
+// ── Firmware config key normaliser ───────────────────────────────────────────
+// The firmware may publish compact keys (interval, tz, gps, debug, shape, h, r…)
+// or the full canonical names used by the backend.  We accept both forms.
+function normalizeFirmwareConfig(raw: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...raw };
 
-  const line                           = m[1];
-  const cfg: Record<string, unknown>   = {};
-  const params: Record<string, number> = {};
+  // compact → canonical
+  if ('interval' in raw && !('reporting_interval_s' in raw))
+    out.reporting_interval_s = Number(raw.interval);
+  if ('tz' in raw && !('timezone_offset_min' in raw))
+    out.timezone_offset_min = Number(raw.tz);
+  if ('gps' in raw && !('gps_enabled' in raw))
+    out.gps_enabled = raw.gps === 1 || raw.gps === true || raw.gps === '1';
+  if ('debug' in raw && !('debug_mode' in raw))
+    out.debug_mode = raw.debug === 1 || raw.debug === true || raw.debug === '1';
+  if ('shape' in raw && !('tank_shape' in raw))
+    out.tank_shape = raw.shape;
 
-  // Each token is key=value (unit is stripped by parseInt/parseFloat)
-  for (const token of line.split(/[\s,]+/)) {
-    const eq = token.indexOf('=');
-    if (eq < 0) continue;
-    const key = token.slice(0, eq);
-    const val = token.slice(eq + 1);
-
-    switch (key) {
-      case 'interval': cfg.reporting_interval_s = parseInt(val, 10);  break;
-      case 'tz':       cfg.timezone_offset_min  = parseInt(val, 10);  break;
-      case 'gps':      cfg.gps_enabled          = val[0] === '1';     break;
-      case 'debug':    cfg.debug_mode           = val[0] === '1';     break;
-      case 'shape':    cfg.tank_shape           = val.replace(/[",}].*$/, ''); break;
-      case 'h':        params.height_m          = parseFloat(val);    break;
-      case 'r':        params.radius_m          = parseFloat(val);    break;
-      case 'rb':       params.radius_b_m        = parseFloat(val);    break;
-      case 'l':        params.length_m          = parseFloat(val);    break;
-      case 'w':        params.width_m           = parseFloat(val);    break;
+  // flat dimension fields → tank_shape_params object
+  if (!('tank_shape_params' in raw)) {
+    const keyMap: Record<string, string> = {
+      h: 'height_m', r: 'radius_m', rb: 'radius_b_m', l: 'length_m', w: 'width_m',
+    };
+    const params: Record<string, number> = {};
+    for (const [k, canonical] of Object.entries(keyMap)) {
+      if (typeof raw[k] === 'number') params[canonical] = raw[k] as number;
     }
+    if (Object.keys(params).length > 0) out.tank_shape_params = params;
   }
 
-  if (Object.keys(params).length > 0) cfg.tank_shape_params = params;
-  return Object.keys(cfg).length > 0 ? cfg : null;
+  return out;
+}
+
+// Handle device/{MAC}/config_report
+// Firmware publishes its current NVS config here after every config write.
+// We persist it to last_config and relay it to connected app clients.
+async function handleConfigReport(
+  deviceStrId: string,
+  rawConfig: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const normalized = normalizeFirmwareConfig(rawConfig);
+
+    // Persist actual device NVS values; fetch thresholds (app-only, not in firmware NVS).
+    const old = await Device.findOneAndUpdate(
+      { device_id: deviceStrId },
+      { last_config: normalized },
+    ).select('last_telemetry').lean();
+
+    const tel        = old?.last_telemetry as Record<string, unknown> | null;
+    const alertPct   = (tel?.alert_threshold_pct as number | undefined) ?? 20;
+    const tempAlertC = (tel?.temp_alert_c         as number | undefined) ?? 80;
+
+    const io = getSocketServer();
+    if (io) {
+      io.to(`device:${deviceStrId}`).emit('config_report', {
+        device_id: deviceStrId,
+        config: {
+          ...normalized,
+          alert_threshold_pct: alertPct,
+          temp_alert_c:        tempAlertC,
+          receivedAt: new Date().toISOString(),
+        },
+      });
+      logger.info('Config report received and relayed', { device: deviceStrId });
+    }
+  } catch (err) {
+    logger.error('handleConfigReport error', {
+      device: deviceStrId,
+      error: (err as Error).message,
+    });
+  }
 }
 
 async function handleDeviceLog(
   deviceStrId: string,
   payload: unknown,
 ): Promise<void> {
-  const message =
-    typeof payload === 'string'
-      ? payload
-      : typeof payload === 'object'
-        ? JSON.stringify(payload)
-        : String(payload);
-
   const io = getSocketServer();
   if (io) {
+    const message =
+      typeof payload === 'string'
+        ? payload
+        : typeof payload === 'object'
+          ? JSON.stringify(payload)
+          : String(payload);
+
     io.to(`device:${deviceStrId}`).emit('device_log', {
       device_id: deviceStrId,
       log: message,
@@ -165,43 +197,6 @@ async function handleDeviceLog(
     });
   }
   logger.debug('Device log received', { device: deviceStrId });
-
-  // ── Config extraction ──────────────────────────────────────────────────────
-  // The firmware logs its full NVS state after every config write.
-  // We parse this to keep last_config in sync with the actual device state
-  // and emit config_report so the app form stays accurate.
-  const extracted = parseConfigFromLog(message);
-  if (!extracted) return;
-
-  try {
-    // Persist actual device NVS values and fetch thresholds in one query.
-    const old = await Device.findOneAndUpdate(
-      { device_id: deviceStrId },
-      { last_config: extracted },
-    ).select('last_telemetry').lean();
-
-    const tel        = old?.last_telemetry as Record<string, unknown> | null;
-    const alertPct   = (tel?.alert_threshold_pct as number | undefined) ?? 20;
-    const tempAlertC = (tel?.temp_alert_c         as number | undefined) ?? 80;
-
-    if (io) {
-      io.to(`device:${deviceStrId}`).emit('config_report', {
-        device_id: deviceStrId,
-        config: {
-          ...extracted,
-          alert_threshold_pct: alertPct,
-          temp_alert_c:        tempAlertC,
-          receivedAt: new Date().toISOString(),
-        },
-      });
-      logger.info('Config report extracted from device log', { device: deviceStrId });
-    }
-  } catch (err) {
-    logger.error('Config extraction from log failed', {
-      device: deviceStrId,
-      error: (err as Error).message,
-    });
-  }
 }
 
 // Handle device/{MAC}/status  — firmware sends the plain string "online" or
@@ -270,6 +265,16 @@ function onMessage(topic: string, message: Buffer): void {
     return;
   }
 
+  if (topic.endsWith('/config_report')) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.toString());
+    } catch {
+      logger.debug('Non-JSON config_report message', { topic });
+      return;
+    }
+    void handleConfigReport(deviceStrId, parsed as Record<string, unknown>);
+  }
 }
 
 export function initMqttClient(): MqttClient {
