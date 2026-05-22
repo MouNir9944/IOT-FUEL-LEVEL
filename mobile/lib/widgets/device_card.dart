@@ -53,7 +53,7 @@ class DeviceCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Icon(
-                    Icons.local_gas_station_rounded,
+                    Icons.propane_tank_rounded,
                     color: t != null
                         ? AppColors.fuelLevelColor(t.fuelLevelPct)
                         : AppColors.textMuted,

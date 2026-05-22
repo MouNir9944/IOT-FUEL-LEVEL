@@ -224,16 +224,27 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
         await Device.findByIdAndUpdate(id, dbUpdate);
       }
 
-      mqttClient.publish(
-        `device/${mac}/config`,
-        JSON.stringify(deviceCfg),
-        { qos: 1, retain: false },
-      );
-      logger.info('set_config translated and sent to device', {
-        device: mac,
-        mobile: v,
-        firmware: deviceCfg,
-      });
+      // Only publish to firmware if there is at least one firmware field.
+      // When the command contains only app-side thresholds (alert_threshold_pct /
+      // temp_alert_c), deviceCfg is empty and publishing {} would trigger a
+      // no-op NVS write on the device.
+      if (Object.keys(deviceCfg).length > 0) {
+        mqttClient.publish(
+          `device/${mac}/config`,
+          JSON.stringify(deviceCfg),
+          { qos: 1, retain: false },
+        );
+        logger.info('set_config translated and sent to device', {
+          device: mac,
+          mobile: v,
+          firmware: deviceCfg,
+        });
+      } else {
+        logger.info('set_config: only app-side thresholds updated, no MQTT publish', {
+          device: mac,
+          mobile: v,
+        });
+      }
 
     } else if (command.cmd === 'ota_update') {
       mqttClient.publish(
