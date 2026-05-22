@@ -384,12 +384,25 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
     SocketService.subscribeToDevice(_device.deviceId);
     setState(() { _configLoading = true; _configLoaded = false; });
     try {
-      await ApiClient.instance.post(
+      final resp = await ApiClient.instance.post(
         '/devices/${_device.id}/command',
         data: {'cmd': 'report_config'},
       );
+
+      // Phase 1 (HTTP): the backend returns the last-stored config directly in
+      // the response body — no socket event required.  Apply it immediately so
+      // the form is populated even if the socket event is delayed or missed.
+      final httpCfg = resp.data is Map ? resp.data['config'] : null;
+      if (httpCfg is Map && mounted) {
+        _applyConfigReport(Map<String, dynamic>.from(httpCfg as Map));
+      }
+
+      // Phase 2 (socket): the device will publish its NVS config to
+      // config_report → backend relays as a socket event.  A 15 s timer
+      // resets the loading spinner if the device never responds, but we
+      // keep _configLoaded = true (set by Phase 1 above) so the form stays
+      // visible.
       _configTimeoutTimer?.cancel();
-      // 15 s gives the SIM7600 cellular round-trip a comfortable window.
       _configTimeoutTimer = Timer(const Duration(seconds: 15), () {
         if (mounted && _configLoading) setState(() => _configLoading = false);
       });

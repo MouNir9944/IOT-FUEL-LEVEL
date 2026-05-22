@@ -141,7 +141,18 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
         logger.info('report_config cmd sent to device', { device: mac });
       }
 
-      res.json({ message: 'Config report initiated', device_id: mac });
+      // Also return the stored config in the HTTP body so the app can apply
+      // it immediately from the await — independent of socket delivery timing.
+      res.json({
+        message: 'Config report initiated',
+        device_id: mac,
+        config: {
+          ...storedConfig,
+          alert_threshold_pct: alertPct,
+          temp_alert_c:        tempAlertC,
+          receivedAt: new Date().toISOString(),
+        },
+      });
       return;
     }
 
