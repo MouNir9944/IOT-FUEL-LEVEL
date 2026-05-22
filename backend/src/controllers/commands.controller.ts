@@ -168,9 +168,13 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       logger.info('OTA update triggered', { device: mac, url: command.url });
 
     } else if (command.cmd === 'report_config') {
-      // Ask the device to publish its current NVS config to device/{mac}/config_report
+      // Ask the device to publish its current NVS config to device/{mac}/config_report.
+      // Publish to device/{mac}/config — the same channel the firmware already subscribes
+      // to for all config updates — because it doesn't subscribe to device/{mac}/cmd.
+      // The firmware identifies this as a command (not a config write) by checking for
+      // the "cmd" field in the payload.
       mqttClient.publish(
-        `device/${mac}/cmd`,
+        `device/${mac}/config`,
         JSON.stringify({ cmd: 'report_config' }),
         { qos: 1, retain: false },
       );

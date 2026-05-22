@@ -20,6 +20,13 @@ function extractDeviceId(topic: string): string {
   return topic.split('/')[1];
 }
 
+// Returns true only for the MAC-address format our firmware uses (e.g. "1C:69:20:35:13:90").
+// Filters out unrelated devices that share the same MQTT broker but publish to the
+// same topic pattern (e.g. "smart_relay_773X" sending JSON on device/+/status).
+function isProjectDevice(id: string): boolean {
+  return /^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$/.test(id);
+}
+
 // ── Telemetry field normalisation ─────────────────────────────────────────────
 // The firmware sends compact field names (level_pct, volume_l, temp_c, ts …).
 // We store the canonical names (fuel_level_pct, fuel_volume_l, temperature_c,
@@ -187,6 +194,13 @@ async function handleConfigReport(
 
 function onMessage(topic: string, message: Buffer): void {
   const deviceStrId = extractDeviceId(topic);
+
+  // Silently ignore messages from devices that don't belong to this project.
+  // Any device ID that isn't a colon-separated MAC address is from another system
+  // sharing the same broker — processing those messages produces spurious log noise.
+  if (!isProjectDevice(deviceStrId)) {
+    return;
+  }
 
   if (topic.endsWith('/telemetry')) {
     let parsed: unknown;
