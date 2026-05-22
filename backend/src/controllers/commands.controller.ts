@@ -88,17 +88,14 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
 
     // ── report_config: two-phase sync ────────────────────────────────────────
     //
-    // The firmware has no dedicated report_config handler — every payload on
-    // device/{mac}/config is a config write.  We work around this with two steps:
-    //
     // Phase 1 (immediate): emit whatever is stored in last_config + thresholds
     //   so the app has a fast response and the form is populated right away.
     //
-    // Phase 2 (accurate, ~200 ms): send {} as a no-op probe to the device.
-    //   The device changes nothing in NVS (no recognised keys) but logs the full
-    //   current state: "Config applied: interval=10s tz=60min shape=…"
-    //   mqtt.service.ts parses that log and emits a second config_report with
-    //   the real NVS values, which overwrites the Phase-1 values in the app.
+    // Phase 2 (accurate): publish {"cmd":"report_config"} to device/{mac}/cmd.
+    //   The firmware reads its NVS and publishes the full config object to
+    //   device/{mac}/config_report.  mqtt.service.ts receives that, normalises
+    //   compact keys, stores to last_config, and emits a second config_report
+    //   socket event with the real NVS values.
     if (command.cmd === 'report_config') {
       const deviceDoc = await Device
         .findById(id)
@@ -130,16 +127,18 @@ export async function sendCommand(req: Request, res: Response): Promise<void> {
       }
       logger.info('Config report (DB) served immediately', { device: mac });
 
-      // Phase 2: {} probe — triggers "Config applied: …" log on device
-      // mqtt.service.ts will parse that log and emit a second, accurate config_report.
+      // Phase 2: ask the device to publish its current NVS config.
+      // The firmware subscribes to device/{mac}/cmd and handles {"cmd":"report_config"}
+      // by reading NVS and publishing the full config to device/{mac}/config_report,
+      // which mqtt.service.ts receives and re-emits as a second (accurate) config_report.
       const mqttClient = getMqttClient();
       if (mqttClient) {
         mqttClient.publish(
-          `device/${mac}/config`,
-          JSON.stringify({}),
+          `device/${mac}/cmd`,
+          JSON.stringify({ cmd: 'report_config' }),
           { qos: 1, retain: false },
         );
-        logger.info('Config probe {} sent to device', { device: mac });
+        logger.info('report_config cmd sent to device', { device: mac });
       }
 
       res.json({ message: 'Config report initiated', device_id: mac });
