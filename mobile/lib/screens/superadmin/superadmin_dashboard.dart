@@ -255,11 +255,15 @@ class _SuperadminDashboardState extends State<SuperadminDashboard> {
     } finally {
       setState(() => _loading = false);
     }
-    // Subscribe to every device's socket room so the Logs tab receives their
-    // device_log events.  Idempotent — safe to call on every refresh.
-    for (final d in _devices) {
-      SocketService.subscribeToDevice(d.deviceId);
-    }
+    // Ensure the socket is connected, then subscribe to every device room so
+    // the Logs tab receives device_log events.  Using connect() here (not just
+    // subscribeToDevice) because the superadmin screen may be opened before any
+    // other screen that establishes the socket connection.
+    SocketService.connect().then((_) {
+      for (final d in _devices) {
+        SocketService.subscribeToDevice(d.deviceId);
+      }
+    });
   }
 
   // â”€â”€ Admin suspend/restore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

@@ -121,12 +121,17 @@ class DeviceCard extends StatelessWidget {
                         valueColor:
                             t.temperatureC! > 50 ? AppColors.error : null,
                       ),
-                    if (t.batteryPct != null)
+                    if (t.batteryMv != null)
                       _Metric(
-                        '${t.batteryPct!.toStringAsFixed(0)}%',
+                        t.isOnMains
+                            ? 'Secteur'
+                            : '${t.batteryPct!.toStringAsFixed(0)}%',
                         'Battery',
-                        valueColor:
-                            t.batteryPct! < 20 ? AppColors.error : null,
+                        valueColor: t.isOnMains
+                            ? AppColors.info
+                            : t.batteryPct! < 20
+                                ? AppColors.error
+                                : null,
                       ),
                   ],
                 ),

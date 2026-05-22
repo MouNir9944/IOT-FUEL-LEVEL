@@ -4,7 +4,8 @@ class Telemetry {
   final double fuelVolumeL;       // calculated volume in litres
   final double? temperatureC;     // °C (optional)
   final int?    batteryMv;        // battery voltage in mV (optional)
-  final int?    rssi;             // WiFi/LoRa signal dBm (optional)
+  final int?    rssi;             // signal strength in dBm (optional)
+  final String? networkMode;      // e.g. "LTE", "4G", "GSM" (optional)
   final DateTime timestamp;
   final double alertThresholdPct; // alert when fuel drops below this %
   final double? tempAlertC;       // alert when temperature exceeds this °C
@@ -16,6 +17,7 @@ class Telemetry {
     this.temperatureC,
     this.batteryMv,
     this.rssi,
+    this.networkMode,
     required this.timestamp,
     this.alertThresholdPct = 20.0,
     this.tempAlertC,
@@ -34,6 +36,7 @@ class Telemetry {
             ((j['temperature_c'] ?? j['temp_c']) as num?)?.toDouble(),
         batteryMv:         (j['battery_mv']          as num?)?.toInt(),
         rssi:              (j['rssi']                as num?)?.toInt(),
+        networkMode:       j['network_mode']         as String?,
         timestamp:         _parseTimestamp(j),
         alertThresholdPct: (j['alert_threshold_pct'] as num?)?.toDouble() ?? 20.0,
         tempAlertC:        (j['temp_alert_c']         as num?)?.toDouble(),
@@ -56,10 +59,17 @@ class Telemetry {
   bool get isLow      => fuelLevelPct > alertThresholdPct &&
                          fuelLevelPct <= alertThresholdPct * 1.5;
 
-  /// Battery percentage (assumes 3 300 mV = 0 %, 4 200 mV = 100 %)
+  /// True when the measured voltage suggests the device is on mains power
+  /// (USB/wall adapter typically reads below 2 700 mV on the battery pin).
+  bool get isOnMains => batteryMv != null && batteryMv! < 2700;
+
+  /// Battery percentage: 0 % at 2 700 mV, 100 % at 4 500 mV.
+  /// Returns null when no voltage is reported.
+  /// Returns null (show mains icon instead) when [isOnMains] is true.
   double? get batteryPct {
     if (batteryMv == null) return null;
-    return ((batteryMv! - 3300) / 900 * 100).clamp(0.0, 100.0);
+    if (isOnMains) return null;
+    return ((batteryMv! - 2700) / 1800 * 100).clamp(0.0, 100.0);
   }
 }
 

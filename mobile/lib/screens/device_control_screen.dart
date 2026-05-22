@@ -763,16 +763,31 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
               ),
               _MetricTile(
                 label: s.batteryLevel,
-                value: t?.batteryPct != null
-                    ? '${t!.batteryPct!.toStringAsFixed(0)} %' : '—',
-                icon: Icons.battery_charging_full_rounded,
-                color: (t?.batteryPct ?? 100) < 20
-                    ? AppColors.error : AppColors.success,
+                value: t == null
+                    ? '—'
+                    : t.isOnMains
+                        ? 'Secteur'
+                        : t.batteryPct != null
+                            ? '${t.batteryPct!.toStringAsFixed(0)} %'
+                            : '—',
+                icon: t?.isOnMains == true
+                    ? Icons.power_rounded
+                    : Icons.battery_charging_full_rounded,
+                color: t?.isOnMains == true
+                    ? AppColors.info
+                    : (t?.batteryPct ?? 100) < 20
+                        ? AppColors.error
+                        : AppColors.success,
               ),
               _MetricTile(
                 label: s.signalStrength,
-                value: t?.rssi != null ? '${t!.rssi} dBm' : '—',
-                icon: Icons.signal_wifi_4_bar_rounded,
+                value: t?.rssi != null
+                    ? [
+                        if (t!.networkMode != null) t.networkMode!,
+                        '${t.rssi} dBm',
+                      ].join(' · ')
+                    : '—',
+                icon: Icons.signal_cellular_alt_rounded,
                 color: (t?.rssi ?? 0) < -80
                     ? AppColors.error : AppColors.success,
               ),
