@@ -17,6 +17,15 @@
 #include "device_config.h"
 #define SETUP_BUTTON_GPIO  GPIO_NUM_0
 
+/* ── Global connectivity config — declared extern in commun_lib.h ───────────
+ * All modules that include commun_lib.h (directly or transitively via
+ * nvs_manager.h / wifi_manager.h / spiffs_manager.h / mqtt_manager.h) share
+ * these values.  Defined here exactly once so the linker never sees a
+ * "multiple definition" error.                                               */
+char g_conn_mode[8]    = "modem";   /* "wifi" | "modem" */
+char g_apn[32]         = "internet";
+char g_operator_mnc[8] = "";        /* "" = auto; "60501/60502/60503" = fixed */
+
 static const char *TAG_MAIN = "TAG MAIN";
 esp_err_t ret;
 extern TaskHandle_t mqtt_main_task_handler;

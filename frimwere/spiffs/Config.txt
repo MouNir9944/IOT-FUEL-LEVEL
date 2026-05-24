@@ -1,0 +1,1 @@
+{"ssid":"jo","password":"1234567b","utc_offset_minutes":60,"conn_mode":"modem","apn":"internet","operator":"60503","flow_ml_per_pulse":2.25}

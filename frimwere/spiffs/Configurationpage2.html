@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Droppy — Setup</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; padding: 28px 16px;
+    }
+    .container { width: 100%; max-width: 420px; }
+
+    /* ── Header ── */
+    .header { text-align: center; margin-bottom: 24px; }
+    .logo {
+      width: 60px; height: 60px; border-radius: 18px;
+      background: linear-gradient(135deg, #0077b6 0%, #00b4d8 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 30px; margin: 0 auto 14px;
+      box-shadow: 0 8px 24px rgba(0,119,182,0.4);
+    }
+    .header h1 { font-size: 22px; font-weight: 800; color: #f8fafc; }
+    .header p  { font-size: 13px; color: #64748b; margin-top: 5px; }
+
+    /* ── Status bar ── */
+    #status {
+      text-align: center; font-size: 12px; font-weight: 600;
+      padding: 10px 14px; border-radius: 10px; margin-bottom: 20px;
+      transition: all 0.3s;
+    }
+    #status.connecting { background: #0c2a4a;   color: #60a5fa; border: 1px solid #1d4ed8; }
+    #status.ready      { background: #052e1633; color: #4ade80; border: 1px solid #166534; }
+    #status.error      { background: #450a0a33; color: #fca5a5; border: 1px solid #7f1d1d; }
+    #status.rebooting  { background: #0c2a4a33; color: #93c5fd; border: 1px solid #1d4ed8; }
+
+    /* ── Card ── */
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; margin-bottom: 14px; }
+    .card-title {
+      font-size: 11px; font-weight: 800; letter-spacing: 0.8px;
+      text-transform: uppercase; color: #64748b; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .card-title::after { content: ''; flex: 1; height: 1px; background: #334155; }
+
+    /* ── Form basics ── */
+    label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
+    select, input[type="password"], input[type="text"], input[type="number"] {
+      width: 100%; padding: 11px 13px;
+      background: #0f172a; border: 1px solid #334155;
+      border-radius: 9px; color: #f1f5f9; font-size: 14px;
+      margin-bottom: 14px; appearance: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    select:focus, input:focus {
+      outline: none; border-color: #0077b6;
+      box-shadow: 0 0 0 3px rgba(0,119,182,0.2);
+    }
+
+    /* Password show/hide */
+    .pass-wrap { position: relative; margin-bottom: 14px; }
+    .pass-wrap input { margin-bottom: 0; padding-right: 44px; }
+    .eye-btn {
+      position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer;
+      color: #64748b; font-size: 16px; padding: 4px; line-height: 1; transition: color 0.15s;
+    }
+    .eye-btn:hover { color: #94a3b8; }
+
+    /* ── WiFi test result ── */
+    #wifi-result {
+      font-size: 13px; font-weight: 600; padding: 11px 13px;
+      border-radius: 9px; margin-top: 2px; display: none; line-height: 1.4;
+    }
+    #wifi-result.ok  { background: #052e1633; color: #4ade80; border: 1px solid #166534; }
+    #wifi-result.err { background: #450a0a33; color: #fca5a5; border: 1px solid #7f1d1d; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      padding: 12px 18px; border: none; border-radius: 10px;
+      font-size: 13px; font-weight: 700; cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s; white-space: nowrap;
+    }
+    .btn:active   { opacity: 0.75; transform: scale(0.97); }
+    .btn:disabled { opacity: 0.38; cursor: default; pointer-events: none; }
+    .btn-ghost { background: #334155; color: #e2e8f0; }
+    .btn-blue  { background: #0077b6; color: #fff; }
+    .btn-green { background: #16a34a; color: #fff; }
+    .btn-full  { width: 100%; }
+    .btn-row   { display: flex; gap: 10px; margin-bottom: 14px; }
+    .btn-row .btn { flex: 1; }
+
+    /* ── Spinner ── */
+    .spin {
+      width: 14px; height: 14px; flex-shrink: 0;
+      border: 2px solid rgba(255,255,255,0.3); border-top-color: currentColor;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Reboot overlay ── */
+    #reboot-overlay {
+      display: none; position: fixed; inset: 0; background: #0f172a;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 18px; z-index: 100;
+    }
+    #reboot-overlay.on { display: flex; }
+    #reboot-overlay .rb-icon { font-size: 48px; animation: pulse 1.2s ease-in-out infinite; }
+    #reboot-overlay h2 { font-size: 20px; font-weight: 800; color: #f8fafc; }
+    #reboot-overlay p  { font-size: 13px; color: #64748b; text-align: center; max-width: 280px; line-height: 1.5; }
+    @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:0.4; } }
+
+    .hint { text-align: center; font-size: 11px; color: #475569; margin-top: 10px; line-height: 1.6; }
+
+    /* ── Mode tabs ── */
+    .mode-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .mode-tab {
+      flex: 1; padding: 11px 8px; border: 1px solid #334155;
+      border-radius: 9px; font-size: 13px; font-weight: 700;
+      cursor: pointer; text-align: center; background: #0f172a;
+      color: #64748b; transition: all 0.18s;
+    }
+    .mode-tab.active {
+      background: #0077b6; border-color: #0077b6; color: #fff;
+      box-shadow: 0 4px 12px rgba(0,119,182,0.35);
+    }
+
+    /* ── APN / modem section ── */
+    #modem-section { display: none; }
+    #wifi-section  { display: block; }
+
+    /* ── Modem test result (mirrors #wifi-result) ── */
+    #modem-result {
+      font-size: 13px; font-weight: 600; padding: 11px 13px;
+      border-radius: 9px; margin-top: 2px; display: none; line-height: 1.5;
+    }
+    #modem-result.ok  { background: #052e1633; color: #4ade80; border: 1px solid #166534; }
+    #modem-result.err { background: #450a0a33; color: #fca5a5; border: 1px solid #7f1d1d; }
+    #modem-result.warn{ background: #1c140033; color: #fbbf24; border: 1px solid #78350f; }
+
+    /* Signal bar glyphs */
+    .sig { letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <div class="logo">💧</div>
+    <h1>Droppy Setup</h1>
+    <p>Configure your smart water valve connectivity</p>
+  </div>
+
+  <div id="status" class="connecting">⟳ Connecting to device…</div>
+
+  <div class="card">
+    <div class="card-title">🔌 Connection Mode</div>
+    <div class="mode-tabs">
+      <div class="mode-tab active" id="tab-wifi"  onclick="setMode('wifi')">📶 WiFi</div>
+      <div class="mode-tab"        id="tab-modem" onclick="setMode('modem')">📡 Cellular / SIM</div>
+    </div>
+
+    <!-- WiFi section -->
+    <div id="wifi-section">
+      <label for="wifi-networks">Network</label>
+      <select id="wifi-networks">
+        <option value="">— Tap Scan to discover networks —</option>
+      </select>
+
+      <label for="wifi-password">Password</label>
+      <div class="pass-wrap">
+        <input type="password" id="wifi-password" placeholder="Enter WiFi password" autocomplete="off">
+        <button class="eye-btn" onclick="togglePass(this)" title="Show/hide" type="button">👁</button>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="btn-scan" onclick="scanWifi()"  type="button">🔍 Scan</button>
+        <button class="btn btn-blue"  id="btn-test" onclick="testWifi()"  type="button">⚡ Test</button>
+      </div>
+      <div id="wifi-result"></div>
+    </div>
+
+    <!-- Modem section -->
+    <div id="modem-section">
+
+      <label for="operator-select">Mobile Operator</label>
+      <select id="operator-select">
+        <option value="">🔄 Auto (let modem choose)</option>
+        <option value="60501">📶 Tunisie Telecom (60501)</option>
+        <option value="60503">📶 Ooredoo (60503)</option>
+        <option value="60502">📶 Orange (60502)</option>
+      </select>
+
+      <label for="apn-input">APN</label>
+      <input type="text" id="apn-input" placeholder="e.g. internet or internet.tn" autocomplete="off">
+      <p class="hint" style="text-align:left; margin-top:-8px; margin-bottom:14px;">
+        Common values: <code>internet</code> (Tunisie Telecom / Orange), <code>internet.ooredoo.tn</code> (Ooredoo)
+      </p>
+
+      <div class="btn-row">
+        <button class="btn btn-blue btn-full" id="btn-modem-test" onclick="testModem()" type="button">
+          📡 Test Modem
+        </button>
+      </div>
+      <div id="modem-result"></div>
+
+    </div>
+
+    <label for="utc-offset">Timezone (UTC offset)</label>
+    <select id="utc-offset">
+      <option value="-720">UTC−12</option>
+      <option value="-660">UTC−11</option>
+      <option value="-600">UTC−10</option>
+      <option value="-570">UTC−9:30</option>
+      <option value="-540">UTC−9</option>
+      <option value="-480">UTC−8</option>
+      <option value="-420">UTC−7</option>
+      <option value="-360">UTC−6</option>
+      <option value="-300">UTC−5</option>
+      <option value="-270">UTC−4:30</option>
+      <option value="-240">UTC−4</option>
+      <option value="-210">UTC−3:30</option>
+      <option value="-180">UTC−3</option>
+      <option value="-120">UTC−2</option>
+      <option value="-60">UTC−1</option>
+      <option value="0">UTC+0  (UK, Morocco)</option>
+      <option value="60">UTC+1  (Tunisia, Algeria, W.Europe)</option>
+      <option value="120">UTC+2  (Egypt, E.Europe)</option>
+      <option value="180">UTC+3  (Arabia, E.Africa)</option>
+      <option value="210">UTC+3:30  (Iran)</option>
+      <option value="240">UTC+4  (Gulf, Baku)</option>
+      <option value="270">UTC+4:30  (Kabul)</option>
+      <option value="300">UTC+5  (Pakistan)</option>
+      <option value="330">UTC+5:30  (India)</option>
+      <option value="345">UTC+5:45  (Nepal)</option>
+      <option value="360">UTC+6  (Bangladesh)</option>
+      <option value="390">UTC+6:30  (Myanmar)</option>
+      <option value="420">UTC+7  (Thailand, Vietnam)</option>
+      <option value="480">UTC+8  (China, Singapore)</option>
+      <option value="525">UTC+8:45  (W.Australia)</option>
+      <option value="540">UTC+9  (Japan, Korea)</option>
+      <option value="570">UTC+9:30  (Australia)</option>
+      <option value="600">UTC+10  (E.Australia)</option>
+      <option value="630">UTC+10:30  (Lord Howe)</option>
+      <option value="660">UTC+11</option>
+      <option value="720">UTC+12  (New Zealand)</option>
+      <option value="765">UTC+12:45  (Chatham)</option>
+      <option value="780">UTC+13</option>
+      <option value="840">UTC+14</option>
+    </select>
+
+  </div>
+
+  <!-- ── Flow Sensor card ── -->
+  <div class="card">
+    <div class="card-title">💧 Flow Sensor</div>
+
+    <label for="sensor-type">Sensor model</label>
+    <select id="sensor-type" onchange="onSensorTypeChange()">
+      <option value="2.25">YF-S201 ½&quot; — 2.25 mL/pulse (450 pulses/L)</option>
+      <option value="8.33">YF-DN50 2&quot; — 8.33 mL/pulse (120 pulses/L)</option>
+      <option value="custom">Custom…</option>
+    </select>
+
+    <div id="custom-mpp-wrap" style="display:none">
+      <label for="custom-mpp">mL per pulse</label>
+      <input type="number" id="custom-mpp" step="0.01" min="0.01" placeholder="e.g. 3.50">
+    </div>
+  </div>
+
+  <button class="btn btn-green btn-full" id="btn-save" onclick="saveAndReboot()" type="button">
+    💾 Save &amp; Reboot
+  </button>
+  <p class="hint">
+    After saving, the device restarts and connects using the selected mode.<br>
+    To reconfigure later, hold the setup button to re-enter AP mode.
+  </p>
+</div>
+
+<!-- Full-screen reboot notice -->
+<div id="reboot-overlay">
+  <div class="rb-icon">💧</div>
+  <h2>Rebooting…</h2>
+  <p>Droppy is restarting and connecting…<br>You can close this page.</p>
+</div>
+
+<script>
+var ws;
+var savedSsid   = '';
+var rebooting   = false;
+var currentMode = 'wifi';   /* 'wifi' | 'modem' */
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('tab-wifi').classList.toggle('active',  mode === 'wifi');
+  document.getElementById('tab-modem').classList.toggle('active', mode === 'modem');
+  document.getElementById('wifi-section').style.display  = (mode === 'wifi')  ? 'block' : 'none';
+  document.getElementById('modem-section').style.display = (mode === 'modem') ? 'block' : 'none';
+}
+
+function initWS() {
+  setStatus('connecting', '⟳ Connecting to device…');
+  ws = new WebSocket('ws://' + window.location.host + '/ws');
+
+  ws.onopen = function() {
+    setStatus('connecting', '⟳ Loading saved config…');
+    wsSend({ state: 0 });
+  };
+  ws.onclose = function() {
+    if (rebooting) {
+      document.getElementById('reboot-overlay').classList.add('on');
+    } else {
+      setStatus('error', '✕ Connection lost — refresh to reconnect');
+    }
+  };
+  ws.onerror = function() {
+    setStatus('error', '✕ WebSocket error — check device');
+  };
+  ws.onmessage = function(e) {
+    try { handleMsg(JSON.parse(e.data)); }
+    catch(ex) { console.error('Bad WS message', ex); }
+  };
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  } else {
+    setStatus('error', '✕ Not connected — refresh the page');
+  }
+}
+
+function handleMsg(msg) {
+  switch (msg.state) {
+
+    /* 0 — saved config */
+    case 0:
+      /* Restore connection mode */
+      if (msg.conn_mode === 'modem') setMode('modem'); else setMode('wifi');
+
+      if (msg.ssid) {
+        savedSsid = msg.ssid;
+        var sel = document.getElementById('wifi-networks');
+        sel.innerHTML = '<option value="' + esc(msg.ssid) + '" selected>' + esc(msg.ssid) + ' (saved)</option>';
+      }
+      if (msg.password) document.getElementById('wifi-password').value = msg.password;
+      if (msg.apn)      document.getElementById('apn-input').value = msg.apn;
+      /* Restore operator */
+      (function() {
+        var opSel = document.getElementById('operator-select');
+        var opVal = msg.operator || '';
+        for (var i = 0; i < opSel.options.length; i++) {
+          if (opSel.options[i].value === opVal) { opSel.selectedIndex = i; break; }
+        }
+      })();
+      /* Restore timezone */
+      (function() {
+        var off = (typeof msg.utc_offset_minutes === 'number') ? msg.utc_offset_minutes : 60;
+        var tzSel = document.getElementById('utc-offset');
+        var best = null, bestDiff = Infinity;
+        for (var i = 0; i < tzSel.options.length; i++) {
+          var v = parseInt(tzSel.options[i].value, 10);
+          var d = Math.abs(v - off);
+          if (d < bestDiff) { bestDiff = d; best = i; }
+        }
+        if (best !== null) tzSel.selectedIndex = best;
+      })();
+      /* Restore flow sensor calibration */
+      (function() {
+        var mpp = (typeof msg.flow_ml_per_pulse === 'number') ? msg.flow_ml_per_pulse : 2.25;
+        var sel = document.getElementById('sensor-type');
+        var matched = false;
+        for (var i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value !== 'custom' &&
+              Math.abs(parseFloat(sel.options[i].value) - mpp) < 0.01) {
+            sel.selectedIndex = i; matched = true; break;
+          }
+        }
+        if (!matched) {
+          sel.value = 'custom';
+          document.getElementById('custom-mpp-wrap').style.display = 'block';
+          document.getElementById('custom-mpp').value = mpp;
+        }
+      })();
+      (function() {
+        var opName = operatorName(msg.operator);
+        setStatus('ready', currentMode === 'modem'
+          ? '✓ Cellular  ' + opName + '  APN: ' + (msg.apn || 'internet')
+          : (msg.ssid ? '✓ Saved network: ' + msg.ssid : '✓ Ready — no WiFi configured yet'));
+      })();
+      break;
+
+    /* 1 — scan results */
+    case 1:
+      if (msg.success === false) {
+        setBusy('scan', false, '🔍 Scan');
+        setStatus('error', '✕ Scan failed: ' + (msg.error || 'Unknown error'));
+        break;
+      }
+      var networks = msg.wifi_networks || [];
+      var sel2 = document.getElementById('wifi-networks');
+      sel2.innerHTML = '<option value="">— Select a network —</option>';
+      var cnt = 0;
+      for (var i = 1; i < networks.length; i++) {
+        var n = networks[i];
+        if (!n.ssid) continue;
+        cnt++;
+        var bars = n.rssi > -50 ? '▮▮▮▮' : n.rssi > -65 ? '▮▮▮░' : n.rssi > -75 ? '▮▮░░' : '▮░░░';
+        var opt = new Option(bars + '  ' + n.ssid + '  (' + n.rssi + ' dBm)', n.ssid);
+        if (n.ssid === savedSsid) opt.selected = true;
+        sel2.appendChild(opt);
+      }
+      setBusy('scan', false, '🔍 Scan');
+      setStatus('ready', '✓ Found ' + cnt + ' network' + (cnt !== 1 ? 's' : ''));
+      break;
+
+    /* 2 — WiFi test result */
+    case 2:
+      setBusy('test', false, '⚡ Test');
+      var el = document.getElementById('wifi-result');
+      el.style.display = 'block';
+      if (msg.success) {
+        el.className   = 'ok';
+        el.textContent = '✓ Connected — ' + (msg.ssid || '') + '  (' + (msg.rssi !== undefined ? msg.rssi + ' dBm' : '?') + ')';
+        setStatus('ready', '✓ Test passed — tap Save &amp; Reboot to apply');
+      } else {
+        el.className   = 'err';
+        el.textContent = '✕ Could not connect — check the SSID and password';
+        setStatus('error', '✕ Test failed');
+      }
+      break;
+
+    /* 3 — modem test result */
+    case 3:
+      setBusy('modem-test', false, '📡 Test Modem');
+      var mr = document.getElementById('modem-result');
+      mr.style.display = 'block';
+      if (!msg.alive) {
+        mr.className   = 'err';
+        mr.textContent = '✕ Modem not responding — check power, SIM card and antenna';
+        setStatus('error', '✕ Modem test failed');
+      } else if (!msg.sim) {
+        mr.className   = 'warn';
+        mr.textContent = '⚠ Modem alive but no SIM detected — insert a SIM card';
+        setStatus('error', '⚠ No SIM card');
+      } else {
+        var sigTxt = (msg.rssi !== undefined)
+          ? msg.rssi + ' dBm &nbsp;' + sigBars(msg.bars || 0)
+          : 'No signal';
+        mr.className  = (msg.rssi !== undefined) ? 'ok' : 'warn';
+        mr.innerHTML  = '✓ Modem OK &nbsp; SIM ✓ &nbsp; Signal: ' + sigTxt;
+        setStatus('ready', '✓ Modem test passed — tap Save &amp; Reboot to apply');
+      }
+      break;
+
+    /* 5 — save confirmed */
+    case 5:
+      if (msg.success) {
+        setStatus('rebooting', '⟳ Config saved — rebooting device…');
+        wsSend({ state: 7 });
+      } else {
+        setStatus('error', '✕ Failed to save config — try again');
+        setBusy('save', false, '💾 Save &amp; Reboot');
+      }
+      break;
+  }
+}
+
+function operatorName(code) {
+  var m = { '60501': 'Tunisie Telecom', '60503': 'Ooredoo', '60503': 'Orange' };
+  return m[code] || 'Auto';
+}
+
+function sigBars(n) {
+  /* n = 0–4 filled bars */
+  var filled = ['▮','▮','▮','▮'].slice(0, n).join('');
+  var empty  = ['░','░','░','░'].slice(0, 4 - n).join('');
+  return '<span class="sig">' + filled + empty + '</span>';
+}
+
+function onSensorTypeChange() {
+  var sel = document.getElementById('sensor-type');
+  document.getElementById('custom-mpp-wrap').style.display =
+    (sel.value === 'custom') ? 'block' : 'none';
+}
+
+function testModem() {
+  setBusy('modem-test', true, 'Testing… (~15 s)');
+  document.getElementById('modem-result').style.display = 'none';
+  setStatus('connecting', '⟳ Testing modem — please wait (~15 s)…');
+  wsSend({ state: 3 });
+}
+
+function scanWifi() {
+  setBusy('scan', true, 'Scanning…');
+  setStatus('connecting', '⟳ Scanning for networks…');
+  wsSend({ state: 1 });
+}
+
+function testWifi() {
+  var ssid     = document.getElementById('wifi-networks').value;
+  var password = document.getElementById('wifi-password').value;
+  if (!ssid) { alert('Please select a network first.'); return; }
+  setBusy('test', true, 'Testing…');
+  document.getElementById('wifi-result').style.display = 'none';
+  setStatus('connecting', '⟳ Testing connection (up to 10 s)…');
+  wsSend({ state: 2, ssid: ssid, password: password });
+}
+
+function saveAndReboot() {
+  var ssid     = document.getElementById('wifi-networks').value;
+  var password = document.getElementById('wifi-password').value;
+  var utcOff   = parseInt(document.getElementById('utc-offset').value, 10) || 0;
+  var apn      = document.getElementById('apn-input').value.trim() || 'internet';
+
+  if (currentMode === 'wifi' && !ssid) {
+    alert('Please select a WiFi network first.');
+    return;
+  }
+  if (currentMode === 'modem' && !apn) {
+    alert('Please enter the APN for your SIM card carrier.');
+    return;
+  }
+
+  var operator = document.getElementById('operator-select').value;
+
+  /* Flow sensor calibration */
+  var sensorSel = document.getElementById('sensor-type');
+  var flowMpp;
+  if (sensorSel.value === 'custom') {
+    flowMpp = parseFloat(document.getElementById('custom-mpp').value);
+    if (isNaN(flowMpp) || flowMpp <= 0) { alert('Please enter a valid mL/pulse value.'); return; }
+  } else {
+    flowMpp = parseFloat(sensorSel.value) || 2.25;
+  }
+
+  rebooting = true;
+  setBusy('save', true, 'Saving…');
+  setStatus('connecting', '⟳ Saving config…');
+  wsSend({
+    state: 5,
+    ssid: ssid, password: password,
+    utc_offset_minutes: utcOff,
+    conn_mode: currentMode,
+    apn: apn,
+    operator: operator,
+    flow_ml_per_pulse: flowMpp
+  });
+}
+
+function setStatus(cls, text) {
+  var el = document.getElementById('status');
+  el.className   = cls;
+  el.textContent = text;
+}
+
+function setBusy(id, busy, label) {
+  var btn = document.getElementById('btn-' + id);
+  if (!btn) return;
+  btn.disabled  = busy;
+  btn.innerHTML = busy ? '<span class="spin"></span> ' + label : label;
+}
+
+function togglePass(btn) {
+  var inp = btn.closest('.pass-wrap').querySelector('input');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+}
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+window.addEventListener('DOMContentLoaded', initWS);
+</script>
+</body>
+</html>

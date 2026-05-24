@@ -9,10 +9,19 @@
 #include "nvs.h"
 #include "SIM7600.h"
 
+/* ── String key/value helpers ─────────────────────────────────────────────── */
+char*     get_saved_data_from_flash(const char* namespace, const char* key);
+esp_err_t saved_data_in_flash(const char* namespace, const char* key,
+                               const char* value);
 
-char* get_saved_data_from_flash(const char* namespace, const char* key);
-esp_err_t saved_data_in_flash(const char* namespace, const char* key, const char* value);
+/* ── GPS coordinate persistence ──────────────────────────────────────────── */
+esp_err_t load_saved_gps_from_nvs(void);
 
-esp_err_t load_saved_gps_from_nvs();
+/* ── uint32 helpers (pulse counters, etc.) ───────────────────────────────── */
+esp_err_t nvs_save_u32(const char *ns, const char *key, uint32_t value);
+esp_err_t nvs_load_u32(const char *ns, const char *key, uint32_t *out);
 
-#endif /*  NVS_MANAGER_H*/
+/* ── NVS initialisation ──────────────────────────────────────────────────── */
+esp_err_t init_nvs(void);
+
+#endif /* NVS_MANAGER_H */

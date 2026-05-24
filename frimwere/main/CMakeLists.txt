@@ -30,8 +30,8 @@ idf_component_register(SRCS "main.c"
                             "./src/nvs_manager.c"
                             "./src/device_config.c"
 
-                    INCLUDE_DIRS "."
-                    "./inc"
+                    INCLUDE_DIRS "./inc"
+                    "."
                     "./Driver_modem/inc"
                     REQUIRES ${requires})
 
